@@ -54,7 +54,14 @@ export default function BrowseApp() {
     window.scrollTo({ top: 0 });
   };
 
-  const play = useCallback((t: Title) => setNotice(`Playing "${t.title}". The video player arrives in the next step.`), []);
+  const play = useCallback(
+    (t: Title, season?: number, episode?: number) => {
+      if (t.comingSoon) return setNotice(`"${t.title}" arrives ${t.comingSoon}. Tap Remind Me to get notified.`);
+      const ep = season && episode ? `&s=${season}&e=${episode}` : "";
+      router.push(`/watch?id=${t.id}${ep}`);
+    },
+    [router],
+  );
   const openTitle = useCallback((t: Title) => setOpen(t), []);
   const closeModal = useCallback(() => setOpen(null), []);
 

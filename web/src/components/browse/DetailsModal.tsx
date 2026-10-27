@@ -12,7 +12,7 @@ type Props = {
   kids: boolean;
   library: LibraryApi;
   onClose: () => void;
-  onPlay: (t: Title) => void;
+  onPlay: (t: Title, season?: number, episode?: number) => void;
   onOpen: (t: Title) => void;
 };
 
@@ -116,7 +116,7 @@ export default function DetailsModal({ title: t, kids, library, onClose, onPlay,
             <ol>
               {episodesFor(t, season).map((ep) => (
                 <li key={ep.number}>
-                  <button onClick={() => onPlay(t)} className="group flex w-full items-center gap-4 border-b border-white/10 px-2 py-5 text-left hover:bg-white/5 sm:px-6">
+                  <button onClick={() => onPlay(t, season, ep.number)} className="group flex w-full items-center gap-4 border-b border-white/10 px-2 py-5 text-left hover:bg-white/5 sm:px-6">
                     <span className="hidden w-6 shrink-0 text-2xl text-white/60 sm:block">{ep.number}</span>
                     <span className="relative aspect-video w-28 shrink-0 overflow-hidden rounded sm:w-36">
                       <Image src={img(t.image, 300, 170)} alt="" fill sizes="150px" className="object-cover" />

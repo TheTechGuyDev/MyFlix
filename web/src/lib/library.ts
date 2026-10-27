@@ -7,7 +7,7 @@
 import { useCallback, useEffect, useState } from "react";
 
 export type Rating = -1 | 1 | 2; // not for me, like, love
-export type Progress = { pct: number; season?: number; episode?: number; updatedAt: string };
+export type Progress = { pct: number; time?: number; duration?: number; season?: number; episode?: number; updatedAt: string };
 export type Library = {
   list: string[];
   ratings: Record<string, Rating>;
@@ -33,6 +33,20 @@ function save(profileId: string, lib: Library) {
   } catch {
     /* ignore */
   }
+}
+
+/** Read one title's saved progress for a profile (used by the player). */
+export function readProgress(profileId: string, titleId: string): Progress | undefined {
+  return load(profileId).progress[titleId];
+}
+
+/** Save or clear (pass null) progress for a title. */
+export function writeProgress(profileId: string, titleId: string, p: Omit<Progress, "updatedAt"> | null) {
+  const l = load(profileId);
+  const progress = { ...l.progress };
+  if (p) progress[titleId] = { ...p, updatedAt: new Date().toISOString() };
+  else delete progress[titleId];
+  save(profileId, { ...l, progress, seeded: true });
 }
 
 export function useLibrary(profileId: string | null, seedIds: string[] = []) {
