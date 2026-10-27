@@ -3,7 +3,7 @@ name: Deploy web to GitHub Pages
 on:
   push:
     branches: [main]
-    paths: ["web/**", ".github/workflows/deploy-web.yml"]
+    paths: ["web/**", "mobile/**", ".github/workflows/deploy-web.yml"]
   workflow_dispatch:
 
 permissions:
@@ -18,21 +18,34 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: web
     steps:
       - uses: actions/checkout@v4
+
+      # Web platform (Next.js) -> /MyFlix/
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
           cache-dependency-path: web/package-lock.json
       - run: npm ci
+        working-directory: web
       - run: npm run build
+        working-directory: web
         env:
           NEXT_PUBLIC_BASE_PATH: /MyFlix
-      - run: touch out/.nojekyll
+
+      # Mobile app web preview (Flutter) -> /MyFlix/app/
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.47.8
+          cache: true
+      - run: flutter pub get
+        working-directory: mobile
+      - run: flutter build web --release --no-web-resources-cdn --base-href /MyFlix/app/
+        working-directory: mobile
+      - run: cp -r mobile/build/web web/out/app && touch web/out/.nojekyll
+
       - uses: actions/upload-pages-artifact@v3
         with:
           path: web/out

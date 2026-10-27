@@ -2,15 +2,14 @@
 
 Nigerian streaming platform (Nollywood, movies, series, documentaries).
 
+## Live links
+- Web platform: https://thetechguydev.github.io/MyFlix/
+- Mobile app preview (in browser): https://thetechguydev.github.io/MyFlix/app/
+- Android APK: [Releases → mobile-latest](https://github.com/TheTechGuyDev/MyFlix/releases/tag/mobile-latest)
+
 ## Structure
 - `web/` – Web platform (Next.js, TypeScript, Tailwind CSS)
-- `mobile/` – Mobile apps (coming next)
+- `mobile/` – Android + iOS app (Flutter)
 - `admin/` – Admin dashboard (coming later)
 
-## Run the web app
-```bash
-cd web
-npm install
-npm run dev
-```
-Open http://localhost:3000
+Both deploy automatically on every push to `main` (GitHub Actions).

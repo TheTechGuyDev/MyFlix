@@ -1,0 +1,45 @@
+name: Build Android APK
+
+on:
+  push:
+    branches: [main]
+    paths: ["mobile/**", ".github/workflows/mobile-apk.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: mobile-apk
+  cancel-in-progress: true
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: mobile
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.47.8
+          cache: true
+      - run: flutter pub get
+      - run: flutter build apk --release
+      - run: cp build/app/outputs/flutter-apk/app-release.apk build/MyFlix.apk
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: mobile-latest
+          name: MyFlix Android (latest build)
+          body: |
+            Latest MyFlix Android test build from `main` (${{ github.sha }}).
+            Download **MyFlix.apk** below and install it on your Android phone (allow "Install unknown apps" when asked).
+          prerelease: true
+          make_latest: false
+          files: mobile/build/MyFlix.apk
