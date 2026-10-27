@@ -11,8 +11,10 @@ export default function PlanPicker() {
   const router = useRouter();
   const [selected, setSelected] = useState<PlanId>("standard");
   const [loading, setLoading] = useState(false);
+  const [mounted, setMounted] = useState(false);
 
   useEffect(() => {
+    setMounted(true);
     const acc = getAccount();
     if (!acc) return router.replace("/signup");
     if (acc.planId) setSelected(acc.planId);
@@ -34,6 +36,8 @@ export default function PlanPicker() {
     { label: "Devices you can watch on at the same time", value: (p) => String(p.screens) },
     { label: "Download devices", value: (p) => String(p.downloads) },
   ];
+
+  if (!mounted) return null;
 
   return (
     <div>

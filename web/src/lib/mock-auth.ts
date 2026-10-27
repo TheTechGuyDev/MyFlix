@@ -63,6 +63,7 @@ export type Account = {
   devices?: Device[];
   notifications?: NotificationPrefs;
   profiles: Profile[];
+  suspended?: boolean;
 };
 
 export const defaultSettings = (kids: boolean): ProfileSettings => ({
@@ -150,6 +151,7 @@ export async function signIn(email: string, password: string, remember = true): 
   const acc = users()[normal(email)];
   if (!acc) return { ok: false, error: "We can't find an account with this email address. Please try again or create a new account." };
   if (acc.passwordHash !== (await hash(password))) return { ok: false, error: "Incorrect password. Please try again or reset your password." };
+  if (acc.suspended) return { ok: false, error: "This account has been suspended. Contact MyFlix support to restore access." };
   write(SESSION_KEY, acc.email);
   if (!remember) sessionStorage.setItem("myflix.tempSession", "1");
   return { ok: true, data: acc };

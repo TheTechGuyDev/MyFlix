@@ -3,7 +3,7 @@ name: Deploy web to GitHub Pages
 on:
   push:
     branches: [main]
-    paths: ["web/**", "mobile/**", ".github/workflows/deploy-web.yml"]
+    paths: ["web/**", "mobile/**", "admin/**", ".github/workflows/deploy-web.yml"]
   workflow_dispatch:
 
 permissions:
@@ -26,13 +26,25 @@ jobs:
         with:
           node-version: 22
           cache: npm
-          cache-dependency-path: web/package-lock.json
+          cache-dependency-path: |
+            web/package-lock.json
+            admin/package-lock.json
       - run: npm ci
         working-directory: web
       - run: npm run build
         working-directory: web
         env:
           NEXT_PUBLIC_BASE_PATH: /MyFlix
+
+      # Admin dashboard (Next.js) -> /MyFlix/admin/
+      - run: npm ci
+        working-directory: admin
+      - run: npm run build
+        working-directory: admin
+        env:
+          NEXT_PUBLIC_BASE_PATH: /MyFlix/admin
+          NEXT_PUBLIC_SITE_URL: /MyFlix/
+      - run: cp -r admin/out web/out/admin
 
       # Mobile app web preview (Flutter) -> /MyFlix/app/
       - uses: subosito/flutter-action@v2

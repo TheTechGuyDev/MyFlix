@@ -45,7 +45,7 @@ export default function DetailsModal({ title: t, kids, max = "18+", library, onC
       <div className="mx-auto min-h-full w-full max-w-4xl bg-ink-2 pb-10 shadow-2xl sm:my-8 sm:min-h-0 sm:rounded-lg" onClick={(e) => e.stopPropagation()}>
         {/* Banner */}
         <div className="relative aspect-video w-full overflow-hidden sm:rounded-t-lg">
-          <Image src={img(t.image, 1280, 720)} alt="" fill sizes="900px" className="object-cover" />
+          <Image src={img(t.backdrop || t.image, 1280, 720)} alt="" fill sizes="900px" className="object-cover" />
           <div className="absolute inset-0 bg-gradient-to-t from-ink-2 via-ink-2/10 to-transparent" />
           <button onClick={onClose} aria-label="Close" className="absolute right-4 top-4 flex h-10 w-10 items-center justify-center rounded-full bg-ink-2 hover:bg-ink-3">
             <CloseIcon className="h-6 w-6" />

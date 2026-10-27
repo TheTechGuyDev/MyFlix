@@ -13,7 +13,7 @@ export default function LoginForm() {
   const [password, setPassword] = useState("");
   const [remember, setRemember] = useState(true);
   const [errors, setErrors] = useState<{ email?: string; password?: string }>({});
-  const [formError, setFormError] = useState("");
+  const [formError, setFormError] = useState(params.get("suspended") ? "This account has been suspended. Contact MyFlix support to restore access." : "");
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {

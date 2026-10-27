@@ -14,6 +14,7 @@ import Row from "./Row";
 import TitleCard from "./TitleCard";
 import DetailsModal from "./DetailsModal";
 import { BellIcon, InfoIcon } from "./icons";
+import { siteSettings } from "@/lib/site-settings";
 
 const TABS: Tab[] = ["home", "series", "movies", "new", "mylist"];
 const SEED = ["no-witness", "chairmans-son", "danfo-diaries"];
@@ -36,6 +37,10 @@ export default function BrowseApp() {
   useEffect(() => {
     const acc = getAccount();
     if (!acc) return router.replace("/login");
+    if (acc.suspended) {
+      signOut();
+      return router.replace("/login?suspended=1");
+    }
     const p = acc.profiles.find((x) => x.id === getActiveProfileId());
     if (!p) return router.replace("/profiles");
     setAccount(acc);
@@ -85,6 +90,18 @@ export default function BrowseApp() {
 
   if (!profile || !account) return <div className="min-h-screen bg-ink" />;
 
+  const site = siteSettings();
+  if (site.maintenance) {
+    return (
+      <div className="flex min-h-screen flex-col items-center justify-center bg-ink px-6 text-center">
+        <p className="font-display text-6xl">MY<span className="text-brand-bright">FLIX</span></p>
+        <h1 className="mt-6 text-2xl font-bold">We&apos;ll be right back</h1>
+        <p className="mt-2 max-w-md text-white/70">{site.maintenanceMessage}</p>
+        <p className="mt-6 text-sm text-white/50">Questions? {site.supportEmail} · {site.supportPhone}</p>
+      </div>
+    );
+  }
+
   const switchProfile = (p: Profile) => {
     setActiveProfile(p.id);
     setProfile(p);
@@ -112,6 +129,12 @@ export default function BrowseApp() {
         }}
         onOpenTitle={(id) => setOpen(byId(id) ?? null)}
       />
+
+      {site.announcement && (
+        <div className="fixed inset-x-0 top-16 z-30 flex items-center justify-center gap-2 bg-brand/95 px-4 py-2 text-center text-sm font-medium lg:top-[68px]">
+          {site.announcement}
+        </div>
+      )}
 
       {results ? (
         <SearchResults query={query} results={results} library={library} onOpen={openTitle} onPlay={play} />

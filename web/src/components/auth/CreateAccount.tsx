@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useState } from "react";
 import { emailExists, getAccount, nextStep, signUp } from "@/lib/mock-auth";
+import { siteSettings } from "@/lib/site-settings";
 import { Alert, Field, PrimaryButton, validateEmail, validatePassword } from "./ui";
 import { StepLabel } from "./SignupShell";
 
@@ -47,6 +48,16 @@ export default function CreateAccount() {
   };
 
   const hasEmail = Boolean(params.get("email"));
+
+  if (!siteSettings().signupsOpen) {
+    return (
+      <div className="space-y-4">
+        <h1 className="text-3xl font-bold">New memberships are paused</h1>
+        <p className="text-lg">We&apos;re not accepting new sign-ups right now. Please check back soon.</p>
+        <Link href="/login" className="font-semibold text-brand underline">Already a member? Sign in</Link>
+      </div>
+    );
+  }
 
   return (
     <form onSubmit={onSubmit} noValidate className="space-y-4">

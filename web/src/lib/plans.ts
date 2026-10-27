@@ -1,4 +1,4 @@
-export type PlanId = "mobile" | "basic" | "standard" | "premium";
+export type PlanId = "mobile" | "basic" | "standard" | "premium" | (string & {});
 
 export type Plan = {
   id: PlanId;
@@ -18,6 +18,19 @@ export const plans: Plan[] = [
   { id: "standard", name: "Standard", price: 4000, resolution: "1080p (Full HD)", quality: "Great", devices: "TV, computer, phone, tablet", screens: 2, downloads: 2, badge: "Most Popular" },
   { id: "premium", name: "Premium", price: 5500, resolution: "4K (Ultra HD) + HDR", quality: "Best", devices: "TV, computer, phone, tablet", screens: 4, downloads: 6 },
 ];
+
+/** Plans edited in the admin dashboard override the defaults (hidden plans are removed). */
+if (typeof window !== "undefined") {
+  try {
+    const raw = localStorage.getItem("myflix.admin.plans");
+    if (raw) {
+      const list = (JSON.parse(raw) as (Plan & { active?: boolean })[]).filter((p) => p.active !== false);
+      if (list.length) plans.splice(0, plans.length, ...list);
+    }
+  } catch {
+    /* keep defaults */
+  }
+}
 
 export const naira = (n: number) => `₦${n.toLocaleString("en-NG")}`;
 

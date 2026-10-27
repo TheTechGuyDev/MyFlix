@@ -5,12 +5,14 @@ import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { episodesFor, type Title } from "@/lib/catalog";
 import { readProgress, writeProgress } from "@/lib/library";
-import { INTRO, PLAN_MAX_HEIGHT, sourcesFor } from "@/lib/streams";
+import { PLAN_MAX_HEIGHT } from "@/lib/streams";
 import { Spinner } from "@/components/auth/ui";
 
 type Props = {
   title: Title;
-  titleIndex: number;
+  sources: string[];
+  extraSubs?: { label: string; src: string; lang: string }[];
+  intro?: { start: number; end: number };
   season: number;
   episode: number;
   profileId: string;
@@ -31,7 +33,7 @@ const fmt = (s: number) => {
 };
 const qualityLabel = (h: number) => (h >= 2160 ? "4K" : h >= 1440 ? "1440p" : `${h}p`);
 
-export default function Player({ title, titleIndex, season, episode, profileId, planId, prefs }: Props) {
+export default function Player({ title, sources, extraSubs = [], intro, season, episode, profileId, planId, prefs }: Props) {
   const router = useRouter();
   const wrapRef = useRef<HTMLDivElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -49,7 +51,6 @@ export default function Player({ title, titleIndex, season, episode, profileId, 
     return null;
   }, [isSeries, episode, episodes.length, season, title.seasons]);
 
-  const sources = useMemo(() => sourcesFor(titleIndex), [titleIndex]);
   const maxHeight = PLAN_MAX_HEIGHT[planId] ?? 1080;
 
   const [srcIdx, setSrcIdx] = useState(0);
@@ -115,7 +116,7 @@ export default function Player({ title, titleIndex, season, episode, profileId, 
       else setError("We're having trouble playing this title right now. Check your connection and try again.");
     };
 
-    if (Hls.isSupported()) {
+    if (Hls.isSupported() && /\.m3u8(\?|$)/i.test(src)) {
       const hls = new Hls({ startPosition: resumeAt || -1, capLevelToPlayerSize: false, enableWorkerVersionCheck: false } as Partial<Hls["config"]>);
       hlsRef.current = hls;
       hls.loadSource(src);
@@ -299,6 +300,14 @@ export default function Player({ title, titleIndex, season, episode, profileId, 
   const chooseSub = (id: number) => {
     setSub(id);
     const hls = hlsRef.current;
+    const v = videoRef.current;
+    if (id >= 1000) {
+      // Subtitle file uploaded in the admin dashboard
+      if (hls) hls.subtitleTrack = -1;
+      if (v) setNativeByLabel(v, extraSubs[id - 1000]?.label ?? null);
+      return;
+    }
+    if (v && extraSubs.length) setNativeByLabel(v, null);
     if (hls) {
       hls.subtitleTrack = id;
       hls.subtitleDisplay = id >= 0;
@@ -406,7 +415,7 @@ export default function Player({ title, titleIndex, season, episode, profileId, 
   const pct = duration ? (shown / duration) * 100 : 0;
   const bufPct = duration ? (buffered / duration) * 100 : 0;
   const remaining = duration - current;
-  const inIntro = isSeries && current >= INTRO.start && current < INTRO.end && duration > INTRO.end + 60;
+  const inIntro = Boolean(intro) && current >= intro!.start && current < intro!.end && duration > intro!.end + 20;
   const showNextCard = Boolean(nextEp) && duration > 0 && (ended || remaining <= 20);
   const label = isSeries && ep ? `S${season}:E${episode} "${ep.title}"` : "";
 
@@ -456,7 +465,11 @@ export default function Player({ title, titleIndex, season, episode, profileId, 
           setShowUi(true);
           save(true);
         }}
-      />
+      >
+        {extraSubs.map((x, i) => (
+          <track key={x.src} id={`admin-${i}`} kind="subtitles" label={x.label} srcLang={x.lang} src={x.src} />
+        ))}
+      </video>
 
       {/* Buffering */}
       {buffering && !error && (
@@ -499,7 +512,7 @@ export default function Player({ title, titleIndex, season, episode, profileId, 
       {inIntro && !showNextCard && (
         <button
           onClick={() => {
-            if (videoRef.current) videoRef.current.currentTime = INTRO.end;
+            if (videoRef.current && intro) videoRef.current.currentTime = intro.end;
           }}
           className="absolute bottom-32 right-6 rounded border-2 border-white/80 bg-black/60 px-6 py-2.5 text-lg font-semibold hover:bg-white hover:text-ink sm:right-12"
         >
@@ -634,10 +647,10 @@ export default function Player({ title, titleIndex, season, episode, profileId, 
               <div>
                 <p className="mb-2 font-bold">Subtitles</p>
                 <Opt on={sub === -1} onClick={() => chooseSub(-1)}>Off</Opt>
-                {subTracks.map((t) => (
+                {[...subTracks, ...extraSubs.map((x, i) => ({ id: 1000 + i, label: x.label }))].map((t) => (
                   <Opt key={t.id} on={sub === t.id} onClick={() => chooseSub(t.id)}>{t.label}</Opt>
                 ))}
-                {!subTracks.length && <p className="mt-1 text-xs text-white/50">No subtitles for this title yet.</p>}
+                {!subTracks.length && !extraSubs.length && <p className="mt-1 text-xs text-white/50">No subtitles for this title yet.</p>}
               </div>
             </div>
           )}
@@ -674,6 +687,13 @@ export default function Player({ title, titleIndex, season, episode, profileId, 
       )}
     </div>
   );
+}
+
+function setNativeByLabel(video: HTMLVideoElement, label: string | null) {
+  const tt = video.textTracks;
+  for (let i = 0; i < tt.length; i++) {
+    if (tt[i].kind === "subtitles" && tt[i].id.startsWith("admin-")) tt[i].mode = tt[i].label === label ? "showing" : "disabled";
+  }
 }
 
 function setNativeSubtitle(video: HTMLVideoElement, id: number) {

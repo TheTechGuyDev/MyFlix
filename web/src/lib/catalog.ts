@@ -24,10 +24,30 @@ export type Title = {
   isNew?: boolean;
   comingSoon?: string;
   quality: "HD" | "4K";
+  // Set by the admin dashboard
+  backdrop?: string;
+  directors?: string[];
+  status?: "published" | "draft" | "scheduled" | "archived";
+  releaseAt?: string;
+  expiresAt?: string;
+  video?: VideoAsset;
+  seasonsData?: { number: number; episodes: EpisodeData[] }[];
+  subtitles?: { id: string; lang: string; label: string; mediaId?: string; url?: string }[];
+  audioTracks?: { id: string; lang: string; label: string; description?: boolean }[];
+  introStart?: number;
+  introEnd?: number;
 };
 
+export type VideoAsset = { source: "upload" | "url"; url?: string; mediaId?: string; height?: number; durationSec?: number };
+export type EpisodeData = { id: string; number: number; title: string; runtime: string; synopsis: string; video?: VideoAsset; introStart?: number; introEnd?: number };
+
+/** Unsplash id, or a full http(s)/data URL uploaded through the admin dashboard. */
 export const img = (id: string, w = 600, h?: number) =>
-  `https://images.unsplash.com/photo-${id}?auto=format&fit=crop&w=${w}${h ? `&h=${h}` : ""}&q=70`;
+  !id
+    ? ""
+    : id.startsWith("http") || id.startsWith("data:")
+      ? id
+      : `https://images.unsplash.com/photo-${id}?auto=format&fit=crop&w=${w}${h ? `&h=${h}` : ""}&q=70`;
 
 const T = (t: Omit<Title, "match" | "quality"> & { match?: number; quality?: "HD" | "4K" }): Title => ({
   match: 90,
@@ -83,6 +103,38 @@ export const catalog: Title[] = [
   T({ id: "megacity", title: "Megacity", image: "1594538756542-8c88bda491c5", type: "series", seasons: 1, year: 2026, maturity: "All", genres: ["Documentary"], synopsis: "How Africa's fastest growing cities are planning for the next fifty years.", cast: ["Narrated by Ronke Ojo"], tags: ["Informative"], match: 82, comingSoon: "Sat 8 Nov" }),
 ];
 
+/* ---------- Live admin data (same site, shared browser storage) ---------- */
+
+type Curation = { heroHome?: string; heroSeries?: string; heroMovies?: string; heroKids?: string; rows: { id: string; title: string; titleIds: string[]; enabled: boolean }[]; top10?: string[] };
+let curationData: Curation | null = null;
+
+const comingLabel = (iso: string) => new Date(iso).toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short" }).replace(",", "");
+
+/** Replaces the built-in catalogue with what the admin published. Scheduled titles go live automatically. */
+function applyAdminCatalog() {
+  if (typeof window === "undefined") return;
+  try {
+    const raw = localStorage.getItem("myflix.admin.catalog");
+    if (raw) {
+      const now = Date.now();
+      const list = (JSON.parse(raw) as Title[])
+        .filter((t) => t.status === "published" || t.status === "scheduled")
+        .filter((t) => !t.expiresAt || new Date(t.expiresAt).getTime() > now)
+        .map((t) => {
+          const future = t.releaseAt && new Date(t.releaseAt).getTime() > now;
+          if (t.status === "scheduled" && future) return { ...t, comingSoon: comingLabel(t.releaseAt!) };
+          return { ...t, comingSoon: undefined };
+        });
+      if (list.length) catalog.splice(0, catalog.length, ...list);
+    }
+    const c = localStorage.getItem("myflix.admin.curation");
+    if (c) curationData = JSON.parse(c);
+  } catch {
+    /* keep built-in catalogue */
+  }
+}
+applyAdminCatalog();
+
 export const byId = (id: string) => catalog.find((t) => t.id === id);
 
 const ORDER: Maturity[] = ["All", "7+", "13+", "16+", "18+"];
@@ -113,10 +165,18 @@ export function rowsFor(tab: Tab, kids: boolean, max: Maturity = "18+"): RowDef[
     ].filter((r) => r.items.length);
   }
 
-  const top = [...pool].sort((a, b) => b.match - a.match).slice(0, 10);
+  const pinned = tab === "home" && curationData?.top10?.length ? curationData.top10.map((id) => pool.find((t) => t.id === id)).filter((t): t is Title => Boolean(t)) : [];
+  const top = pinned.length ? pinned.slice(0, 10) : [...pool].sort((a, b) => b.match - a.match).slice(0, 10);
+  const custom: RowDef[] =
+    tab === "home"
+      ? (curationData?.rows ?? [])
+          .filter((r) => r.enabled)
+          .map((r) => ({ id: r.id, title: r.title, items: r.titleIds.map((id) => pool.find((t) => t.id === id)).filter((t): t is Title => Boolean(t)) }))
+      : [];
   return [
     { id: "trending", title: `Trending Now${label ? ` in ${label}` : ""}`, items: [...pool].sort((a, b) => b.year - a.year || b.match - a.match).slice(0, 14) },
     { id: "top10", title: `Top 10 ${label || "Titles"} in Nigeria Today`, items: top, ranked: true },
+    ...custom,
     { id: "nollywood", title: "Nollywood Hits", items: g("Nollywood") },
     { id: "originals", title: "Only on MyFlix", items: pool.filter((t) => t.original) },
     { id: "new", title: "New Releases", items: pool.filter((t) => t.isNew) },
@@ -131,7 +191,8 @@ export function rowsFor(tab: Tab, kids: boolean, max: Maturity = "18+"): RowDef[
 
 export function featuredFor(tab: Tab, kids: boolean, max: Maturity = "18+"): Title {
   const pool = catalog.filter((t) => released(t) && (!kids || t.kids) && allowedFor(t, max));
-  const pick = kids ? "compound-kids" : tab === "movies" ? "third-mainland" : tab === "series" ? "queen-of-balogun" : "eko-nights";
+  const c = curationData;
+  const pick = kids ? c?.heroKids ?? "compound-kids" : tab === "movies" ? c?.heroMovies ?? "third-mainland" : tab === "series" ? c?.heroSeries ?? "queen-of-balogun" : c?.heroHome ?? "eko-nights";
   const typed = pool.filter((t) => tab === "movies" ? t.type === "movie" : tab === "series" ? t.type === "series" : true);
   return pool.find((t) => t.id === pick) ?? [...typed].sort((a, b) => b.match - a.match)[0] ?? pool[0] ?? catalog[0];
 }
@@ -153,7 +214,9 @@ export function similarTo(t: Title, kids: boolean, max: Maturity = "18+"): Title
     .slice(0, 9);
 }
 
-export function episodesFor(t: Title, season: number) {
+export function episodesFor(t: Title, season: number): { number: number; title: string; runtime: string; synopsis: string; video?: VideoAsset; introStart?: number; introEnd?: number }[] {
+  const real = t.seasonsData?.find((s) => s.number === season);
+  if (real) return real.episodes;
   const count = 6 + ((t.title.length + season) % 4);
   return Array.from({ length: count }, (_, i) => ({
     number: i + 1,
