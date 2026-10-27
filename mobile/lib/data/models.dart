@@ -60,6 +60,8 @@ class ProfileSettings {
   String? pin;
   bool autoplayNext, autoplayPreviews, downloadOnWifiOnly;
   String downloadQuality;
+  int? dailyLimitMinutes;
+  int? monthlyDataCapGB;
 
   ProfileSettings({
     this.language = 'English',
@@ -72,6 +74,8 @@ class ProfileSettings {
     this.autoplayPreviews = true,
     this.downloadOnWifiOnly = true,
     this.downloadQuality = 'standard',
+    this.dailyLimitMinutes,
+    this.monthlyDataCapGB,
   });
 
   factory ProfileSettings.fromJson(Map<String, dynamic>? j, bool kids) {
@@ -87,6 +91,8 @@ class ProfileSettings {
     s.autoplayPreviews = j['autoplayPreviews'] ?? true;
     s.downloadOnWifiOnly = j['downloadOnWifiOnly'] ?? true;
     s.downloadQuality = j['downloadQuality'] ?? 'standard';
+    s.dailyLimitMinutes = j['dailyLimitMinutes'];
+    s.monthlyDataCapGB = j['monthlyDataCapGB'];
     return s;
   }
 
@@ -101,6 +107,8 @@ class ProfileSettings {
         'autoplayPreviews': autoplayPreviews,
         'downloadOnWifiOnly': downloadOnWifiOnly,
         'downloadQuality': downloadQuality,
+        if (dailyLimitMinutes != null) 'dailyLimitMinutes': dailyLimitMinutes,
+        if (monthlyDataCapGB != null) 'monthlyDataCapGB': monthlyDataCapGB,
       };
 }
 
@@ -149,7 +157,7 @@ class BillingRecord {
 class Account {
   String email, passwordHash;
   final String createdAt;
-  String? planId, phone, cancelAt;
+  String? planId, phone, cancelAt, billingCycle, promoLabel, referredBy;
   Payment? payment;
   List<BillingRecord> billing;
   List<Profile> profiles;
@@ -162,6 +170,9 @@ class Account {
     this.planId,
     this.phone,
     this.cancelAt,
+    this.billingCycle,
+    this.promoLabel,
+    this.referredBy,
     this.payment,
     List<BillingRecord>? billing,
     List<Profile>? profiles,
@@ -178,6 +189,9 @@ class Account {
         planId: j['planId'],
         phone: j['phone'],
         cancelAt: j['cancelAt'],
+        billingCycle: j['billingCycle'],
+        promoLabel: j['promoLabel'],
+        referredBy: j['referredBy'],
         payment: j['payment'] == null ? null : Payment.fromJson(Map<String, dynamic>.from(j['payment'])),
         billing: ((j['billing'] as List?) ?? []).map((e) => BillingRecord.fromJson(Map<String, dynamic>.from(e))).toList(),
         profiles: ((j['profiles'] as List?) ?? []).map((e) => Profile.fromJson(Map<String, dynamic>.from(e))).toList(),
@@ -191,6 +205,9 @@ class Account {
         if (planId != null) 'planId': planId,
         if (phone != null) 'phone': phone,
         if (cancelAt != null) 'cancelAt': cancelAt,
+        if (billingCycle != null) 'billingCycle': billingCycle,
+        if (promoLabel != null) 'promoLabel': promoLabel,
+        if (referredBy != null) 'referredBy': referredBy,
         if (payment != null) 'payment': payment!.toJson(),
         'billing': billing.map((b) => b.toJson()).toList(),
         'profiles': profiles.map((p) => p.toJson()).toList(),

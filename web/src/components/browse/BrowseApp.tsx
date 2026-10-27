@@ -275,7 +275,7 @@ function BrowseFooter() {
     <footer className="mx-auto max-w-5xl px-4 pb-14 pt-8 text-sm text-white/50 sm:px-10">
       <ul className="grid grid-cols-2 gap-3 sm:grid-cols-4">
         {links.map((l) => (
-          <li key={l}><Link href="/#faq" className="hover:underline">{l}</Link></li>
+          <li key={l}><Link href={l === "Help Centre" ? "/help" : l === "Gift Cards" ? "/account/gift" : "/help"} className="hover:underline">{l}</Link></li>
         ))}
       </ul>
       <p className="mt-6 inline-block border border-white/40 px-2 py-1 text-xs">Service Code</p>

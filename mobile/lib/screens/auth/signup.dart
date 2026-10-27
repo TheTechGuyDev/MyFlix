@@ -134,6 +134,7 @@ class PlanScreen extends StatefulWidget {
 class _PlanScreenState extends State<PlanScreen> {
   late String _sel = context.read<AuthStore>().account?.planId ?? 'standard';
   bool _loading = false;
+  bool _annual = false;
 
   @override
   Widget build(BuildContext context) {
@@ -141,6 +142,7 @@ class _PlanScreenState extends State<PlanScreen> {
       step: 2,
       bottom: PrimaryButton('Next', loading: _loading, onPressed: () async {
         setState(() => _loading = true);
+        context.read<AuthStore>().pendingAnnual = _annual;
         await context.read<AuthStore>().choosePlan(_sel);
         if (context.mounted) context.go('/signup/payment');
       }),
@@ -153,7 +155,14 @@ class _PlanScreenState extends State<PlanScreen> {
             child: Row(children: [const Icon(Icons.check, color: AppColors.brandBright), const SizedBox(width: 8), Expanded(child: Text(t, style: _p))]),
           ),
         const SizedBox(height: 12),
-        for (final p in Catalog.plans) _PlanCard(plan: p, selected: _sel == p.id, onTap: () => setState(() => _sel = p.id)),
+        SegmentedButton<bool>(
+          segments: const [ButtonSegment(value: false, label: Text('Monthly')), ButtonSegment(value: true, label: Text('Yearly · save 15%'))],
+          selected: {_annual},
+          onSelectionChanged: (s) => setState(() => _annual = s.first),
+          style: SegmentedButton.styleFrom(selectedBackgroundColor: AppColors.brand, selectedForegroundColor: Colors.white),
+        ),
+        const SizedBox(height: 12),
+        for (final p in Catalog.plans) _PlanCard(plan: p, selected: _sel == p.id, annual: _annual, onTap: () => setState(() => _sel = p.id)),
         const SizedBox(height: 8),
         const Text(
           'HD, Full HD and 4K availability depends on your internet service and device. Only people who live with you may use your account.',
@@ -166,9 +175,9 @@ class _PlanScreenState extends State<PlanScreen> {
 
 class _PlanCard extends StatelessWidget {
   final Plan plan;
-  final bool selected;
+  final bool selected, annual;
   final VoidCallback onTap;
-  const _PlanCard({required this.plan, required this.selected, required this.onTap});
+  const _PlanCard({required this.plan, required this.selected, required this.onTap, this.annual = false});
 
   @override
   Widget build(BuildContext context) {
@@ -208,7 +217,7 @@ class _PlanCard extends StatelessWidget {
           Padding(
             padding: const EdgeInsets.fromLTRB(14, 10, 14, 12),
             child: Column(children: [
-              _row('Monthly price', naira(plan.price)),
+              annual ? _row('Yearly price', '${naira(annualPrice(plan))} (${naira((annualPrice(plan) / 12).round())}/mo)') : _row('Monthly price', naira(plan.price)),
               _row('Video and sound quality', plan.quality),
               _row('Watch at the same time', '${plan.screens}'),
               _row('Download devices', '${plan.downloads}'),
@@ -242,6 +251,9 @@ class _PaymentScreenState extends State<PaymentScreen> {
   final _num = TextEditingController(), _exp = TextEditingController(), _cvv = TextEditingController(), _name = TextEditingController();
   Map<String, String?> _err = {};
   String _bank = 'GTBank';
+  final _promo = TextEditingController();
+  Promo? _applied;
+  String? _promoErr;
   static const _banks = {'GTBank': '*737*000*', 'Access Bank': '*901*000*', 'Zenith Bank': '*966*000*', 'First Bank': '*894*000*', 'UBA': '*919*000*'};
 
   Future<void> _pay() async {
@@ -262,14 +274,20 @@ class _PaymentScreenState extends State<PaymentScreen> {
       last4 = d.substring(d.length - 4);
     }
     setState(() => _loading = true);
-    await context.read<AuthStore>().completePayment(_method!, last4: last4);
+    final auth = context.read<AuthStore>();
+    final plan = Catalog.plan(auth.account?.planId);
+    final full = plan == null ? 0 : (auth.pendingAnnual ? annualPrice(plan) : plan.price);
+    await auth.completePayment(_method!,
+        last4: last4, annual: auth.pendingAnnual, amount: _applied?.apply(full) ?? full, freeMonths: _applied?.freeMonths ?? 0, promoLabel: _applied?.label);
     if (mounted) context.go('/signup/profiles');
   }
 
   @override
   Widget build(BuildContext context) {
-    final plan = Catalog.plan(context.watch<AuthStore>().account?.planId);
-    final price = plan?.price ?? 0;
+    final auth = context.watch<AuthStore>();
+    final plan = Catalog.plan(auth.account?.planId);
+    final full = plan == null ? 0 : (auth.pendingAnnual ? annualPrice(plan) : plan.price);
+    final price = _applied?.apply(full) ?? full;
     return _Shell(
       step: 3,
       bottom: _method == null
@@ -284,13 +302,30 @@ class _PaymentScreenState extends State<PaymentScreen> {
           child: Row(children: [
             Expanded(
               child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                Text('${naira(price)}/month', style: const TextStyle(fontWeight: FontWeight.w700)),
-                Text('${plan?.name ?? ''} plan', style: const TextStyle(color: AppColors.muted, fontSize: 13)),
+                Text('${naira(price)} today, then ${auth.pendingAnnual ? 'yearly' : 'monthly'}', style: const TextStyle(fontWeight: FontWeight.w700)),
+                Text('${plan?.name ?? ''} plan${_applied != null ? ' · ${_applied!.label}' : ''}', style: const TextStyle(color: AppColors.muted, fontSize: 13)),
               ]),
             ),
             TextButton(onPressed: () => context.go('/signup/plan'), child: const Text('Change', style: TextStyle(color: AppColors.brandBright, fontWeight: FontWeight.w700))),
           ]),
         ),
+        const SizedBox(height: 12),
+        Row(children: [
+          Expanded(child: TextField(controller: _promo, textCapitalization: TextCapitalization.characters, decoration: InputDecoration(hintText: 'Promo code', errorText: _promoErr, contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12)))),
+          const SizedBox(width: 8),
+          OutlinedButton(
+            onPressed: () {
+              final (p, e) = Promo.check(_promo.text, plan?.id ?? '');
+              setState(() {
+                _applied = p;
+                _promoErr = e;
+              });
+            },
+            style: OutlinedButton.styleFrom(minimumSize: const Size(80, 50), side: const BorderSide(color: Colors.white54)),
+            child: const Text('Apply', style: TextStyle(color: Colors.white)),
+          ),
+        ]),
+        if (_applied != null) Padding(padding: const EdgeInsets.only(top: 6), child: Text('Code ${_applied!.code} applied: ${_applied!.label}', style: const TextStyle(color: AppColors.brandBright, fontWeight: FontWeight.w600))),
         const SizedBox(height: 16),
         if (_method == null) ...[
           const Text('Your payment is encrypted and you can change how you pay anytime.', style: _p),

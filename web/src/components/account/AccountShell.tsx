@@ -17,6 +17,8 @@ const nav = [
   { href: "/account/security", label: "Security", icon: "M12 3 4 6v6c0 5 3.5 8 8 9 4.5-1 8-4 8-9V6z" },
   { href: "/account/devices", label: "Devices", icon: "M3 5h18v11H3zM8 20h8M12 16v4" },
   { href: "/account/profiles", label: "Profiles", icon: "M16 8a4 4 0 1 1-8 0 4 4 0 0 1 8 0zM4 21a8 8 0 0 1 16 0" },
+  { href: "/account/activity", label: "Viewing activity", icon: "M12 7v5l3 2M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0z" },
+  { href: "/account/invite", label: "Invite & rewards", icon: "M20 12v9H4v-9M2 7h20v5H2zM12 22V7M12 7H7.5a2.5 2.5 0 1 1 0-5C11 2 12 7 12 7zM12 7h4.5a2.5 2.5 0 1 0 0-5C13 2 12 7 12 7z" },
 ];
 
 export default function AccountShell({ children }: { children: ReactNode }) {

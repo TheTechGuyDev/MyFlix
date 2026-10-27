@@ -8,9 +8,12 @@ export const DEMO_STREAMS = [
   "https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8",
 ];
 
+/** Progressive MP4 hosted with the site: last-resort fallback if every HLS host is unreachable. */
+export const DEMO_MP4 = `${process.env.NEXT_PUBLIC_BASE_PATH ?? ""}/media/demo.mp4`;
+
 export function sourcesFor(titleIndex: number): string[] {
   const start = titleIndex % DEMO_STREAMS.length;
-  return [...DEMO_STREAMS.slice(start), ...DEMO_STREAMS.slice(0, start)];
+  return [...DEMO_STREAMS.slice(start), ...DEMO_STREAMS.slice(0, start), DEMO_MP4];
 }
 
 /** Highest resolution (video height) each plan may stream. */

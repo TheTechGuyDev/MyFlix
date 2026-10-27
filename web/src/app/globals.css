@@ -49,3 +49,15 @@ video::cue {
   font-size: clamp(16px, 2.4vw, 32px);
   font-family: var(--font-inter), system-ui, sans-serif;
 }
+
+/* Slow cinematic drift on hero artwork */
+@keyframes kenburns {
+  from { transform: scale(1.02) translate(0, 0); }
+  to { transform: scale(1.12) translate(-1.5%, -1%); }
+}
+.kenburns {
+  animation: kenburns 24s ease-in-out infinite alternate;
+}
+@media (prefers-reduced-motion: reduce) {
+  .kenburns { animation: none; }
+}

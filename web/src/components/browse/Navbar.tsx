@@ -8,6 +8,7 @@ import Avatar from "@/components/auth/Avatar";
 import type { Profile } from "@/lib/mock-auth";
 import { byId, img, type Tab } from "@/lib/catalog";
 import { BellIcon, ChevronDown, CloseIcon, SearchIcon } from "./icons";
+import { campaignNotices } from "@/lib/extras";
 
 const tabs: { id: Tab; label: string }[] = [
   { id: "home", label: "Home" },
@@ -67,6 +68,13 @@ export default function Navbar({ tab, onTab, query, onQuery, profile, profiles, 
   useEffect(() => {
     if (searchOpen) inputRef.current?.focus();
   }, [searchOpen]);
+
+  const [fromAdmin, setFromAdmin] = useState<ReturnType<typeof campaignNotices>>([]);
+  useEffect(() => setFromAdmin(campaignNotices()), []);
+  const allNotices = [
+    ...fromAdmin.filter((c) => c.titleId && byId(c.titleId)).map((c) => ({ id: c.titleId!, head: c.head, body: c.body, when: c.at ? new Date(c.at).toLocaleDateString("en-NG", { day: "numeric", month: "short" }) : "" })),
+    ...notifications,
+  ].filter((n, i, arr) => byId(n.id) && arr.findIndex((x) => x.head === n.head && x.id === n.id) === i);
 
   const visibleTabs = profile.kids ? tabs.filter((t) => t.id !== "new") : tabs;
 
@@ -137,15 +145,15 @@ export default function Navbar({ tab, onTab, query, onQuery, profile, profiles, 
             <button onClick={() => setMenu(menu === "bell" ? null : "bell")} aria-label="Notifications" className="relative p-1">
               <BellIcon className="h-6 w-6" />
               <span className="absolute -right-0.5 -top-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-brand px-1 text-[10px] font-bold">
-                {notifications.length}
+                {allNotices.length}
               </span>
             </button>
             {menu === "bell" && (
               <ul className="absolute right-0 top-11 w-80 border-t-2 border-white bg-black/95 text-sm">
-                {notifications.map((n) => {
+                {allNotices.map((n) => {
                   const t = byId(n.id)!;
                   return (
-                    <li key={n.id}>
+                    <li key={n.id + n.head}>
                       <button onClick={() => { onOpenTitle(n.id); close(); }} className="flex w-full gap-3 border-b border-white/10 p-3 text-left hover:bg-white/5">
                         <span className="relative h-16 w-28 shrink-0 overflow-hidden rounded">
                           <Image src={img(t.image, 240, 135)} alt="" fill sizes="112px" className="object-cover" />
@@ -182,7 +190,7 @@ export default function Navbar({ tab, onTab, query, onQuery, profile, profiles, 
                   ))}
                   <li><Link href="/profiles" className="block px-4 py-2 hover:underline">Manage Profiles</Link></li>
                   <li><Link href="/account" className="block px-4 py-2 hover:underline">Account</Link></li>
-                  <li><Link href="/#faq" className="block px-4 py-2 hover:underline">Help Centre</Link></li>
+                  <li><Link href="/help" className="block px-4 py-2 hover:underline">Help Centre</Link></li>
                 </ul>
                 <button onClick={onSignOut} className="block w-full border-t border-white/20 px-4 py-3 text-center hover:underline">
                   Sign out of MyFlix

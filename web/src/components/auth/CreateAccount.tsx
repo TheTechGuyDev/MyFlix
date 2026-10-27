@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useState } from "react";
-import { emailExists, getAccount, nextStep, signUp } from "@/lib/mock-auth";
+import { emailExists, getAccount, nextStep, setReferredBy, signUp } from "@/lib/mock-auth";
 import { siteSettings } from "@/lib/site-settings";
 import { Alert, Field, PrimaryButton, validateEmail, validatePassword } from "./ui";
 import { StepLabel } from "./SignupShell";
@@ -44,6 +44,8 @@ export default function CreateAccount() {
     const res = await signUp(email, password);
     setLoading(false);
     if (!res.ok) return setFormError(res.error);
+    const ref = params.get("ref");
+    if (ref) await setReferredBy(ref.toUpperCase());
     router.push("/signup/plan");
   };
 

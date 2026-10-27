@@ -151,6 +151,12 @@ function load(): Db {
   if (!read(KEYS.plans)) write(KEYS.plans, d.plans);
   if (!read(KEYS.settings)) write(KEYS.settings, d.settings);
   if (!read(KEYS.curation)) write(KEYS.curation, d.curation);
+  // Shared with the site (promo codes at checkout, gift redemption, help tickets, notifications)
+  if (!read(KEYS.promos)) write(KEYS.promos, d.promos);
+  if (!read(KEYS.gifts)) write(KEYS.gifts, d.gifts);
+  if (!read(KEYS.campaigns)) write(KEYS.campaigns, d.campaigns);
+  if (!read(KEYS.tickets)) write(KEYS.tickets, d.tickets);
+  if (!read(KEYS.roles)) write(KEYS.roles, d.roles);
   return d;
 }
 
@@ -176,11 +182,13 @@ export function useDb<T>(select: (d: Db) => T): T {
   const snap = useSyncExternalStore(
     (cb) => {
       listeners.add(cb);
+      // Another tab (admin or the MyFlix site) changed shared data: reload so tickets, sign-ups,
+      // redeemed gift cards and promo usage appear live.
       const onStorage = (e: StorageEvent) => {
-        if (e.key === KEYS.webUsers && db) {
-          db.webMembers = loadWebMembers();
-          emit();
-        }
+        if (!e.key || !e.key.startsWith("myflix.") || e.key === KEYS.session) return;
+        if (e.key === KEYS.webUsers && db) db.webMembers = loadWebMembers();
+        else db = null;
+        emit();
       };
       window.addEventListener("storage", onStorage);
       return () => {

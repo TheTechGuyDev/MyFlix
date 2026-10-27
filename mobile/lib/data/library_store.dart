@@ -69,6 +69,9 @@ class LibraryStore extends ChangeNotifier {
   Map<String, Progress> progress = {};
   Set<String> reminders = {};
   List<String> recentSearches = [];
+  Map<String, Map<String, double>> usage = {}; // month -> {seconds, gb}
+  Map<String, double> today = {}; // date -> seconds
+  List<Map<String, dynamic>> activity = []; // {titleId, season, episode, at}
   Map<String, DownloadItem> downloads = {};
   final Map<String, StreamSubscription> _active = {};
 
@@ -99,6 +102,9 @@ class LibraryStore extends ChangeNotifier {
     reminders = {};
     recentSearches = [];
     downloads = {};
+    usage = {};
+    today = {};
+    activity = [];
     if (profileId == null) return notifyListeners();
     final raw = _prefs.getString(_key);
     if (raw != null) {
@@ -109,6 +115,9 @@ class LibraryStore extends ChangeNotifier {
       reminders = Set<String>.from(j['reminders'] ?? []);
       recentSearches = List<String>.from(j['recent'] ?? []);
       downloads = (j['downloads'] as Map? ?? {}).map((k, v) => MapEntry(k as String, DownloadItem.fromJson(Map<String, dynamic>.from(v))));
+      usage = (j['usage'] as Map? ?? {}).map((k, v) => MapEntry(k as String, (v as Map).map((a, b) => MapEntry(a as String, (b as num).toDouble()))));
+      today = (j['today'] as Map? ?? {}).map((k, v) => MapEntry(k as String, (v as num).toDouble()));
+      activity = ((j['activity'] as List?) ?? []).map((e) => Map<String, dynamic>.from(e)).toList();
     } else {
       // Fresh profile: give Continue Watching something to show (demo)
       final now = DateTime.now().toIso8601String();
@@ -132,6 +141,9 @@ class LibraryStore extends ChangeNotifier {
         'reminders': reminders.toList(),
         'recent': recentSearches,
         'downloads': downloads.map((k, v) => MapEntry(k, v.toJson())),
+        'usage': usage,
+        'today': today,
+        'activity': activity,
       }),
     );
   }
@@ -192,6 +204,50 @@ class LibraryStore extends ChangeNotifier {
 
   void removeProgress(String id) {
     progress.remove(id);
+    _changed();
+  }
+
+  /* ---------------- Data meter, screen time, activity ---------------- */
+  static String _month([DateTime? d]) {
+    final x = d ?? DateTime.now();
+    return '${x.year}-${x.month.toString().padLeft(2, '0')}';
+  }
+
+  static String _day() => DateTime.now().toIso8601String().substring(0, 10);
+
+  /// GB per hour by quality: Save Data ~0.3, SD ~0.7, HD ~3, 4K ~7.
+  static double gbPerHour(String dataUsage) => switch (dataUsage) { 'saver' => 0.3, 'hd' => 3.0, '4k' => 7.0, _ => 1.2 };
+
+  int _pendingSave = 0;
+  void addUsage(double seconds, String dataUsage) {
+    if (seconds <= 0 || seconds > 30) return;
+    final m = usage[_month()] ?? {'seconds': 0, 'gb': 0};
+    usage[_month()] = {'seconds': (m['seconds'] ?? 0) + seconds, 'gb': (m['gb'] ?? 0) + gbPerHour(dataUsage) * seconds / 3600};
+    today = {_day(): (today[_day()] ?? 0) + seconds};
+    if (++_pendingSave >= 10) {
+      _pendingSave = 0;
+      _save();
+    }
+  }
+
+  double get monthGb => usage[_month()]?['gb'] ?? 0;
+  double get monthHours => (usage[_month()]?['seconds'] ?? 0) / 3600;
+  int get todayMinutes => ((today[_day()] ?? 0) / 60).floor();
+
+  void logActivity(String titleId, {int? season, int? episode}) {
+    activity.removeWhere((a) => a['titleId'] == titleId && a['season'] == season && a['episode'] == episode);
+    activity.insert(0, {'titleId': titleId, 'season': season, 'episode': episode, 'at': DateTime.now().toIso8601String()});
+    if (activity.length > 300) activity = activity.sublist(0, 300);
+    _changed();
+  }
+
+  void hideActivity(String at) {
+    activity.removeWhere((a) => a['at'] == at);
+    _changed();
+  }
+
+  void clearActivity() {
+    activity = [];
     _changed();
   }
 

@@ -8,6 +8,7 @@ import '../../data/models.dart';
 import '../../theme.dart';
 import '../../widgets/avatar.dart';
 import '../../widgets/common.dart';
+import 'extras.dart';
 
 String fmtDate(String? iso) {
   if (iso == null) return '';
@@ -87,6 +88,8 @@ class AccountScreen extends StatelessWidget {
                   const SizedBox(height: 8),
                   Text(cancelled ? "You won't be charged again." : 'Next payment: ${fmtDate(a.payment?.renewsAt)}', style: const TextStyle(color: AppColors.muted)),
                   Text(methodLabel(a.payment), style: const TextStyle(color: AppColors.muted)),
+                  if (a.billingCycle == 'annual') const Text('Billed yearly', style: TextStyle(color: AppColors.muted)),
+                  if (a.promoLabel != null) Text('Promo: ${a.promoLabel}', style: const TextStyle(color: AppColors.brandBright)),
                 ]),
               ),
             ]),
@@ -96,6 +99,7 @@ class AccountScreen extends StatelessWidget {
           _row('Change plan', onTap: () => context.push('/account/plan')),
           _row('Manage payment method', onTap: () => context.push('/account/payment')),
           _row('Billing history', sub: 'Receipts for every payment', onTap: () => context.push('/account/billing')),
+          _row('Redeem gift card', sub: 'Opens the MyFlix website', onTap: () => openLink(context, giftRedeemUrl)),
           cancelled
               ? _row('Restart membership', color: AppColors.brandBright, onTap: () => context.push('/account/cancel'))
               : _row('Cancel membership', color: AppColors.danger, onTap: () => context.push('/account/cancel')),
@@ -588,6 +592,32 @@ class _ProfileSettingsScreenState extends State<ProfileSettingsScreen> {
             ),
           ),
         ]),
+        _Section(title: 'SCREEN TIME & DATA LIMITS', children: [
+          Padding(
+            padding: const EdgeInsets.all(12),
+            child: DropdownButtonFormField<int>(
+              initialValue: _s.dailyLimitMinutes ?? 0,
+              decoration: const InputDecoration(labelText: 'Daily viewing limit'),
+              items: [
+                const DropdownMenuItem(value: 0, child: Text('No limit')),
+                for (final m in const [30, 60, 90, 120, 180, 240]) DropdownMenuItem(value: m, child: Text(m >= 60 ? '${m ~/ 60} hour${m > 60 ? 's' : ''} a day${m % 60 != 0 ? ' 30 min' : ''}' : '$m minutes a day')),
+              ],
+              onChanged: (v) => setState(() => _s.dailyLimitMinutes = v == 0 ? null : v),
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+            child: DropdownButtonFormField<int>(
+              initialValue: _s.monthlyDataCapGB ?? 0,
+              decoration: const InputDecoration(labelText: 'Monthly data cap'),
+              items: [
+                const DropdownMenuItem(value: 0, child: Text('No cap')),
+                for (final g in const [2, 5, 10, 20, 50]) DropdownMenuItem(value: g, child: Text('$g GB a month')),
+              ],
+              onChanged: (v) => setState(() => _s.monthlyDataCapGB = v == 0 ? null : v),
+            ),
+          ),
+        ]),
         _Section(title: 'VIEWING RESTRICTIONS', children: [
           for (final m in mats.where((m) => !p.kids || m.$1 == 'All' || m.$1 == '7+'))
             ListTile(
@@ -787,10 +817,7 @@ class HelpScreen extends StatelessWidget {
             childrenPadding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
             children: [Text(f.$2, style: const TextStyle(color: Colors.white70, height: 1.4))],
           ),
-        const Padding(
-          padding: EdgeInsets.all(16),
-          child: Text('Still need help? Call 0800 000 0000 or email help@myflix.ng', style: TextStyle(color: AppColors.muted)),
-        ),
+        const ContactCard(),
       ]),
     );
   }

@@ -3,7 +3,7 @@
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { choosePlan, getAccount } from "@/lib/mock-auth";
-import { naira, plans, type PlanId } from "@/lib/plans";
+import { annualPrice, naira, plans, type PlanId } from "@/lib/plans";
 import { PrimaryButton } from "./ui";
 import { StepLabel } from "./SignupShell";
 
@@ -12,6 +12,7 @@ export default function PlanPicker() {
   const [selected, setSelected] = useState<PlanId>("standard");
   const [loading, setLoading] = useState(false);
   const [mounted, setMounted] = useState(false);
+  const [annual, setAnnual] = useState(false);
 
   useEffect(() => {
     setMounted(true);
@@ -22,6 +23,9 @@ export default function PlanPicker() {
 
   const onNext = async () => {
     setLoading(true);
+    try {
+      sessionStorage.setItem("myflix.cycle", annual ? "annual" : "monthly");
+    } catch {}
     const res = await choosePlan(selected);
     setLoading(false);
     if (res.ok) router.push("/signup/payment");
@@ -29,7 +33,7 @@ export default function PlanPicker() {
   };
 
   const rows: { label: string; value: (p: (typeof plans)[number]) => string }[] = [
-    { label: "Monthly price", value: (p) => naira(p.price) },
+    { label: annual ? "Yearly price" : "Monthly price", value: (p) => (annual ? `${naira(annualPrice(p))} (${naira(Math.round(annualPrice(p) / 12))}/mo)` : naira(p.price)) },
     { label: "Video and sound quality", value: (p) => p.quality },
     { label: "Resolution", value: (p) => p.resolution },
     { label: "Supported devices", value: (p) => p.devices },
@@ -52,7 +56,15 @@ export default function PlanPicker() {
         ))}
       </ul>
 
-      <div role="radiogroup" aria-label="Plans" className="mt-8 grid grid-cols-2 gap-3 lg:grid-cols-4">
+      <div className="mt-6 inline-flex rounded-full bg-neutral-100 p-1">
+        {[false, true].map((a) => (
+          <button key={String(a)} onClick={() => setAnnual(a)} className={`rounded-full px-4 py-1.5 text-sm font-semibold transition ${annual === a ? "bg-white shadow" : "text-neutral-500"}`}>
+            {a ? "Yearly (save up to 15%)" : "Monthly"}
+          </button>
+        ))}
+      </div>
+
+      <div role="radiogroup" aria-label="Plans" className="mt-6 grid grid-cols-2 gap-3 lg:grid-cols-4">
         {plans.map((p) => {
           const active = selected === p.id;
           return (

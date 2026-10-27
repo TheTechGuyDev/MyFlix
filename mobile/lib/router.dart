@@ -6,6 +6,7 @@ import 'screens/auth/signup.dart';
 import 'screens/main/account.dart';
 import 'screens/main/browse_more.dart';
 import 'screens/main/details.dart';
+import 'screens/main/extras.dart';
 import 'screens/main/home.dart';
 import 'screens/main/my_myflix.dart';
 import 'screens/main/player.dart';
@@ -85,6 +86,9 @@ GoRouter buildRouter(AuthStore auth) {
       GoRoute(path: '/profile-settings/:id', builder: (_, s) => ProfileSettingsScreen(id: s.pathParameters['id']!)),
       GoRoute(path: '/app-settings', builder: (_, _) => const AppSettingsScreen()),
       GoRoute(path: '/help', builder: (_, _) => const HelpScreen()),
+      GoRoute(path: '/activity', builder: (_, _) => const ActivityScreen()),
+      GoRoute(path: '/invite', builder: (_, _) => const InviteScreen()),
+      GoRoute(path: '/tv', builder: (_, _) => const TvSignInScreen()),
     ],
   );
 }

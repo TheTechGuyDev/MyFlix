@@ -20,6 +20,7 @@ class AuthStore extends ChangeNotifier {
   String? _session;
   String? activeProfileId;
   bool onboarded = false;
+  bool pendingAnnual = false;
 
   Account? get account => _session == null ? null : _users[_session];
   Profile? get activeProfile {
@@ -118,12 +119,14 @@ class AuthStore extends ChangeNotifier {
     await _persist();
   }
 
-  Future<void> completePayment(String method, {String? last4}) async {
+  Future<void> completePayment(String method, {String? last4, bool annual = false, int? amount, int freeMonths = 0, String? promoLabel}) async {
     await _wait(1500);
     final a = account;
     if (a == null) return;
     final now = DateTime.now();
-    final renews = DateTime(now.year, now.month + 1, now.day);
+    final renews = DateTime(now.year, now.month + (annual ? 12 : 1) + freeMonths, now.day);
+    a.billingCycle = annual ? 'annual' : 'monthly';
+    a.promoLabel = promoLabel;
     a.payment = Payment(method: method, last4: last4, paidAt: now.toIso8601String(), renewsAt: renews.toIso8601String());
     a.billing.insert(
       0,
@@ -133,7 +136,7 @@ class AuthStore extends ChangeNotifier {
         planId: a.planId ?? 'standard',
         method: method,
         last4: last4,
-        amount: Catalog.plan(a.planId)?.price ?? 0,
+        amount: amount ?? Catalog.plan(a.planId)?.price ?? 0,
       ),
     );
     await _persist();

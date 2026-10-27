@@ -295,6 +295,26 @@ export function ProfileSettingsPage() {
         )}
       </Card>
 
+      <Card title="Screen time & data limits">
+        <p className="mb-3 text-sm text-neutral-500">MyFlix extra: keep viewing healthy and protect your data bundle.</p>
+        <div className="grid gap-4 sm:grid-cols-2">
+          <label className="block text-sm">
+            <span className="mb-1 block font-semibold">Daily viewing limit</span>
+            <select value={s.dailyLimitMinutes ?? 0} onChange={(e) => patch({ dailyLimitMinutes: Number(e.target.value) || undefined })} className="h-11 w-full rounded border border-neutral-400 bg-white px-3">
+              <option value={0}>No limit</option>
+              {[30, 60, 90, 120, 180, 240].map((m) => <option key={m} value={m}>{m >= 60 ? `${m / 60} hour${m > 60 ? "s" : ""}` : `${m} minutes`} a day</option>)}
+            </select>
+          </label>
+          <label className="block text-sm">
+            <span className="mb-1 block font-semibold">Monthly data cap</span>
+            <select value={s.monthlyDataCapGB ?? 0} onChange={(e) => patch({ monthlyDataCapGB: Number(e.target.value) || undefined })} className="h-11 w-full rounded border border-neutral-400 bg-white px-3">
+              <option value={0}>No cap</option>
+              {[2, 5, 10, 20, 50].map((g) => <option key={g} value={g}>{g} GB, then switch to Data Saver</option>)}
+            </select>
+          </label>
+        </div>
+      </Card>
+
       <Card title="Playback">
         <Toggle on={s.autoplayNext} onChange={(v) => patch({ autoplayNext: v })} label="Autoplay next episode" sub="Play the next episode automatically on all devices" />
         <Toggle on={s.autoplayPreviews} onChange={(v) => patch({ autoplayPreviews: v })} label="Autoplay previews while browsing" />

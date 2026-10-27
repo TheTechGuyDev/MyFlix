@@ -86,6 +86,7 @@ export default function WatchApp() {
       profileId={ctx.profile.id}
       planId={ctx.account.planId ?? "standard"}
       prefs={settingsOf(ctx.profile)}
+      startAt={params.get("t") ? Number(params.get("t")) : undefined}
     />
   );
 }

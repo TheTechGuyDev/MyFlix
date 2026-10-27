@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:go_router/go_router.dart';
 import 'package:provider/provider.dart';
+import 'package:share_plus/share_plus.dart';
 import 'package:video_player/video_player.dart';
 import '../../data/auth_store.dart';
 import '../../data/catalog.dart';
@@ -34,6 +35,10 @@ class _PlayerScreenState extends State<PlayerScreen> {
   Timer? _hide, _saveTimer, _countdownTimer;
   int _countdown = 10;
   double? _drag;
+  DateTime? _lastTick, _sleepAt;
+  bool _sleepEnd = false, _capWarned = false, _logged = false;
+  String? _blocked; // sleep | limit | still
+  static int _autoplayChain = 0;
 
   @override
   void initState() {
@@ -108,6 +113,10 @@ class _PlayerScreenState extends State<PlayerScreen> {
         if (resume > 0 && resume < c.value.duration.inSeconds - 30) await c.seekTo(Duration(milliseconds: (resume * 1000).round()));
         c.addListener(_tick);
         await c.play();
+        if (!_logged) {
+          _logged = true;
+          lib.logActivity(t.id, season: t.isSeries ? _season : null, episode: t.isSeries ? _episode : null);
+        }
         setState(() => _c = c);
         _poke();
         return;
@@ -122,11 +131,35 @@ class _PlayerScreenState extends State<PlayerScreen> {
     final c = _c;
     if (c == null || !mounted) return;
     final v = c.value;
+    // Data meter, screen time, sleep timer
+    final now = DateTime.now();
+    if (v.isPlaying && _lastTick != null) lib.addUsage(now.difference(_lastTick!).inMilliseconds / 1000, profile.settings.dataUsage);
+    _lastTick = v.isPlaying ? now : null;
+    final limit = profile.settings.dailyLimitMinutes;
+    if (limit != null && v.isPlaying && lib.todayMinutes >= limit) {
+      c.pause();
+      _blocked = 'limit';
+    }
+    final cap = profile.settings.monthlyDataCapGB;
+    if (cap != null && !_capWarned && lib.monthGb >= cap) {
+      _capWarned = true;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("You've reached your $cap GB monthly data limit for this profile.")));
+    }
+    if (_sleepAt != null && now.isAfter(_sleepAt!)) {
+      c.pause();
+      _sleepAt = null;
+      _blocked = 'sleep';
+    }
     if (!_ended && v.duration > Duration.zero && v.position >= v.duration - const Duration(milliseconds: 300) && !v.isPlaying) {
       _ended = true;
       _save();
       _ui = true;
-      if (_next != null && profile.settings.autoplayNext) _startCountdown();
+      if (_sleepEnd) {
+        _sleepEnd = false;
+        _blocked = 'sleep';
+      } else if (_next != null && profile.settings.autoplayNext) {
+        _startCountdown();
+      }
     }
     setState(() {});
   }
@@ -139,7 +172,12 @@ class _PlayerScreenState extends State<PlayerScreen> {
       setState(() => _countdown--);
       if (_countdown <= 0) {
         tm.cancel();
-        _goEpisode(_next!.season, _next!.episode);
+        // "Are you still watching?" after 3 autoplayed episodes in a row
+        if (++_autoplayChain >= 3) {
+          setState(() => _blocked = 'still');
+        } else {
+          _goEpisode(_next!.season, _next!.episode);
+        }
       }
     });
   }
@@ -373,6 +411,8 @@ class _PlayerScreenState extends State<PlayerScreen> {
                           child: Row(children: [
                             _Btn(icon: Icons.speed, label: 'Speed (${v!.playbackSpeed}x)', onTap: () => _sheet((ctx) => _speedSheet(ctx))),
                             _Btn(icon: Icons.lock_outline, label: 'Lock', onTap: () => setState(() => _locked = true)),
+                            _Btn(icon: Icons.bedtime_outlined, label: _sleepAt != null || _sleepEnd ? 'Sleep (on)' : 'Sleep timer', onTap: () => _sheet((ctx) => _sleepSheet(ctx))),
+                            _Btn(icon: Icons.share_outlined, label: 'Share moment', onTap: _share),
                             if (t.isSeries) _Btn(icon: Icons.video_library_outlined, label: 'Episodes', onTap: () => _sheet((ctx) => _episodesSheet(ctx))),
                             _Btn(icon: Icons.subtitles_outlined, label: 'Audio & Subtitles', onTap: () => _sheet((ctx) => _audioSheet(ctx))),
                             if (next != null) _Btn(icon: Icons.skip_next, label: 'Next Ep.', onTap: () => _goEpisode(next.season, next.episode)),
@@ -381,6 +421,54 @@ class _PlayerScreenState extends State<PlayerScreen> {
                     ]),
                   ),
                 ),
+              ),
+            ),
+
+          if (_blocked != null)
+            Positioned.fill(
+              child: Container(
+                color: Colors.black87,
+                padding: const EdgeInsets.all(24),
+                child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
+                  Text(
+                    _blocked == 'sleep' ? 'Sleep timer ended' : _blocked == 'limit' ? "That's all for today" : 'Are you still watching ${t.title}?',
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(fontSize: 22, fontWeight: FontWeight.w800),
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    _blocked == 'sleep'
+                        ? "Good night! We've paused so you don't miss anything."
+                        : _blocked == 'limit'
+                            ? 'This profile has a ${profile.settings.dailyLimitMinutes}-minute daily limit. A parent can change it in Profile Settings.'
+                            : 'We paused to save your data in case you fell asleep.',
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(color: Colors.white70),
+                  ),
+                  const SizedBox(height: 20),
+                  Wrap(spacing: 12, children: [
+                    if (_blocked == 'still' && next != null)
+                      FilledButton(
+                        style: FilledButton.styleFrom(backgroundColor: Colors.white, foregroundColor: AppColors.ink),
+                        onPressed: () {
+                          _autoplayChain = 0;
+                          setState(() => _blocked = null);
+                          _goEpisode(next.season, next.episode);
+                        },
+                        child: const Text('Continue Watching'),
+                      ),
+                    if (_blocked == 'sleep')
+                      FilledButton(
+                        style: FilledButton.styleFrom(backgroundColor: Colors.white, foregroundColor: AppColors.ink),
+                        onPressed: () {
+                          setState(() => _blocked = null);
+                          _c?.play();
+                        },
+                        child: const Text('Keep Watching'),
+                      ),
+                    OutlinedButton(onPressed: () => context.pop(), child: const Text('Back', style: TextStyle(color: Colors.white))),
+                  ]),
+                ]),
               ),
             ),
 
@@ -410,6 +498,42 @@ class _PlayerScreenState extends State<PlayerScreen> {
       ),
     );
   }
+
+  void _share() {
+    final secs = _c?.value.position.inSeconds ?? 0;
+    final url = 'https://thetechguydev.github.io/MyFlix/watch/?id=${t.id}${t.isSeries ? '&s=$_season&e=$_episode' : ''}&t=$secs';
+    SharePlus.instance.share(ShareParams(text: 'Watch this moment of "${t.title}" on MyFlix: $url'));
+  }
+
+  Widget _sleepSheet(BuildContext ctx) => Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(mainAxisSize: MainAxisSize.min, children: [
+          const Text('Sleep Timer', style: TextStyle(fontWeight: FontWeight.w700, fontSize: 16)),
+          const SizedBox(height: 8),
+          ListTile(title: const Text('Off'), trailing: _sleepAt == null && !_sleepEnd ? const Icon(Icons.check, color: AppColors.brandBright) : null, onTap: () {
+            setState(() {
+              _sleepAt = null;
+              _sleepEnd = false;
+            });
+            Navigator.pop(ctx);
+          }),
+          for (final m in const [15, 30, 45, 60])
+            ListTile(title: Text('$m minutes'), onTap: () {
+              setState(() {
+                _sleepAt = DateTime.now().add(Duration(minutes: m));
+                _sleepEnd = false;
+              });
+              Navigator.pop(ctx);
+            }),
+          ListTile(title: Text(t.isSeries ? 'End of episode' : 'End of film'), trailing: _sleepEnd ? const Icon(Icons.check, color: AppColors.brandBright) : null, onTap: () {
+            setState(() {
+              _sleepEnd = true;
+              _sleepAt = null;
+            });
+            Navigator.pop(ctx);
+          }),
+        ]),
+      );
 
   Widget _speedSheet(BuildContext ctx) => Padding(
         padding: const EdgeInsets.all(20),

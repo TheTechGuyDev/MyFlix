@@ -117,6 +117,34 @@ class Catalog {
   }
 }
 
+/// Promo codes (mirrors the admin dashboard defaults until the backend serves live codes).
+class Promo {
+  final String code, kind, label;
+  final int value;
+  final List<String> plans;
+  const Promo(this.code, this.kind, this.value, this.plans, this.label);
+
+  int apply(int price) => kind == 'percent' ? (price * (100 - value) / 100).round() : kind == 'amount' ? (price - value).clamp(0, price) : 0;
+  int get freeMonths => kind == 'free_months' ? value : 0;
+
+  static const all = [
+    Promo('WELCOME50', 'percent', 50, ['basic', 'standard', 'premium'], '50% off your first payment'),
+    Promo('DETTY2026', 'free_months', 1, ['premium'], '1 free month'),
+    Promo('STUDENT', 'amount', 500, ['mobile', 'basic'], '₦500 off your first payment'),
+  ];
+
+  static (Promo?, String?) check(String code, String planId) {
+    final c = code.trim().toUpperCase();
+    if (c.isEmpty) return (null, 'Enter a promo code.');
+    for (final p in all) {
+      if (p.code == c) return p.plans.contains(planId) ? (p, null) : (null, "That code doesn't apply to your plan.");
+    }
+    return (null, "That promo code isn't valid.");
+  }
+}
+
+int annualPrice(Plan p) => (p.price * 12 * 0.85).round();
+
 class ContentRow {
   final String title;
   final List<MediaTitle> items;

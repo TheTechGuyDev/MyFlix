@@ -4,7 +4,8 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { completePayment, getAccount, type PaymentMethod } from "@/lib/mock-auth";
-import { getPlan, naira, type Plan } from "@/lib/plans";
+import { annualPrice, getPlan, naira, type Plan } from "@/lib/plans";
+import { checkPromo, redeemPromoUse, type PromoResult } from "@/lib/extras";
 import { Alert, Field, PrimaryButton } from "./ui";
 import { StepLabel } from "./SignupShell";
 
@@ -29,6 +30,9 @@ export default function PaymentForm() {
   const [method, setMethod] = useState<PaymentMethod | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [annual, setAnnual] = useState(false);
+  const [promoCode, setPromoCode] = useState("");
+  const [promo, setPromo] = useState<PromoResult | null>(null);
 
   useEffect(() => {
     const acc = getAccount();
@@ -36,19 +40,33 @@ export default function PaymentForm() {
     if (!acc.planId) return router.replace("/signup/plan");
     setPlan(getPlan(acc.planId));
     setEmail(acc.email);
+    try {
+      setAnnual(sessionStorage.getItem("myflix.cycle") === "annual");
+    } catch {}
   }, [router]);
 
   const pay = async (last4?: string) => {
     if (!method) return;
     setError("");
     setLoading(true);
-    const res = await completePayment(method, last4);
+    const ok = promo?.ok ? promo : null;
+    const res = await completePayment(method, last4, {
+      annual,
+      amount: due,
+      freeMonths: ok?.freeMonths ?? 0,
+      promo: ok ? { code: ok.code, label: ok.label } : undefined,
+    });
+    if (ok) redeemPromoUse(ok.code);
     setLoading(false);
     if (!res.ok) return setError(res.error);
     router.push("/signup/profiles");
   };
 
   if (!plan) return null;
+
+  const full = annual ? annualPrice(plan) : plan.price;
+  const due = promo?.ok ? promo.apply(full) : full;
+  const charge: Plan = { ...plan, price: due };
 
   return (
     <div className="space-y-5">
@@ -57,8 +75,11 @@ export default function PaymentForm() {
 
       <div className="flex items-center justify-between rounded-lg bg-neutral-100 px-4 py-3">
         <div>
-          <p className="font-semibold">{naira(plan.price)}/month</p>
-          <p className="text-sm text-neutral-600">{plan.name} plan</p>
+          <p className="font-semibold">
+            {promo?.ok && <span className="mr-2 text-neutral-400 line-through">{naira(full)}</span>}
+            {naira(due)} {annual ? "today, then yearly" : "today, then monthly"}
+          </p>
+          <p className="text-sm text-neutral-600">{plan.name} plan · {annual ? "billed yearly" : "billed monthly"}{promo?.ok ? ` · ${promo.label}` : ""}</p>
         </div>
         <Link href="/signup/plan" className="font-semibold text-brand hover:underline">
           Change
@@ -66,6 +87,27 @@ export default function PaymentForm() {
       </div>
 
       {error && <Alert>{error}</Alert>}
+
+      <div>
+        <div className="flex gap-2">
+          <input
+            value={promoCode}
+            onChange={(e) => setPromoCode(e.target.value.toUpperCase())}
+            placeholder="Promo code"
+            aria-label="Promo code"
+            className="h-11 flex-1 rounded border border-neutral-400 px-3 text-base uppercase outline-none focus:ring-2 focus:ring-neutral-900"
+          />
+          <button
+            type="button"
+            onClick={() => setPromo(checkPromo(promoCode, plan.id))}
+            className="h-11 rounded border border-neutral-900 px-4 font-semibold hover:bg-neutral-900 hover:text-white"
+          >
+            Apply
+          </button>
+        </div>
+        {promo && !promo.ok && <p className="mt-1 text-sm text-danger">{promo.error}</p>}
+        {promo?.ok && <p className="mt-1 text-sm font-semibold text-brand">Code {promo.code} applied: {promo.label}</p>}
+      </div>
 
       {!method && (
         <>
@@ -92,9 +134,9 @@ export default function PaymentForm() {
         </>
       )}
 
-      {method === "card" && <CardForm plan={plan} loading={loading} onPay={pay} />}
-      {method === "transfer" && <TransferPanel plan={plan} email={email} loading={loading} onPay={() => pay()} />}
-      {method === "ussd" && <UssdPanel plan={plan} loading={loading} onPay={() => pay()} />}
+      {method === "card" && <CardForm plan={charge} loading={loading} onPay={pay} />}
+      {method === "transfer" && <TransferPanel plan={charge} email={email} loading={loading} onPay={() => pay()} />}
+      {method === "ussd" && <UssdPanel plan={charge} loading={loading} onPay={() => pay()} />}
 
       {method && (
         <button onClick={() => setMethod(null)} className="text-sm font-semibold text-neutral-600 hover:underline">
@@ -242,7 +284,7 @@ function UssdPanel({ plan, loading, onPay }: { plan: Plan; loading: boolean; onP
 function Terms({ plan }: { plan: Plan }) {
   return (
     <p className="text-sm text-neutral-600">
-      By continuing, you agree that your membership renews automatically every month at {naira(plan.price)} until you
+      By continuing, you agree to pay {naira(plan.price)} today. Your membership then renews automatically at the full plan price until you
       cancel. Cancel anytime from your Account page to avoid future charges.
     </p>
   );

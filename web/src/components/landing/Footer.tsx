@@ -14,7 +14,7 @@ export default function Footer() {
       <ul className="grid grid-cols-2 gap-x-4 gap-y-3 text-sm sm:grid-cols-3 lg:grid-cols-4">
         {footerLinks.map((l) => (
           <li key={l}>
-            <Link href={l === "FAQ" ? "#faq" : "#"} className="underline hover:text-white">
+            <Link href={l === "FAQ" ? "#faq" : "/help"} className="underline hover:text-white">
               {l}
             </Link>
           </li>

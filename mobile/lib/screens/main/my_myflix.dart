@@ -9,6 +9,7 @@ import '../../theme.dart';
 import '../../widgets/avatar.dart';
 import '../../widgets/titles.dart';
 import '../profiles.dart';
+import 'extras.dart';
 
 class MyMyFlixScreen extends StatelessWidget {
   const MyMyFlixScreen({super.key});
@@ -87,7 +88,11 @@ class MyMyFlixScreen extends StatelessWidget {
         const SizedBox(height: 16),
         _Tile(icon: Icons.notifications_none, color: AppColors.danger, title: 'Notifications', sub: reminders > 0 ? '$reminders reminder${reminders == 1 ? '' : 's'} set' : 'New arrivals and reminders', onTap: () => context.push('/notifications')),
         _Tile(icon: Icons.download_outlined, color: const Color(0xFF3B82F6), title: 'Downloads', sub: dlCount == 0 ? 'Watch without internet' : '$dlCount downloaded', onTap: () => context.push('/downloads')),
-        const SizedBox(height: 8),
+        _Tile(icon: Icons.history, color: const Color(0xFF8B5CF6), title: 'Viewing activity', sub: 'History and ratings', onTap: () => context.push('/activity')),
+        _Tile(icon: Icons.card_giftcard, color: AppColors.brand, title: 'Invite friends', sub: 'You both get a free month', onTap: () => context.push('/invite')),
+        _Tile(icon: Icons.tv, color: const Color(0xFFF59E0B), title: 'Sign in on TV', sub: 'Enter the code shown on your TV', onTap: () => context.push('/tv')),
+        const SizedBox(height: 12),
+        const DataUsageCard(),
         if (myList.isNotEmpty) RowSection(title: 'My List', onTitleTap: () => context.push('/mylist'), children: [for (final t in myList) PosterCard(t)]),
         if (liked.isNotEmpty) RowSection(title: 'Titles You Liked', children: [for (final t in liked) PosterCard(t)]),
         if (watched.isNotEmpty) RowSection(title: 'Continue Watching', height: 228, children: [for (final t in watched) ContinueCard(t)]),

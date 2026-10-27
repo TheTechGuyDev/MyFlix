@@ -6,6 +6,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { episodesFor, type Title } from "@/lib/catalog";
 import { readProgress, writeProgress } from "@/lib/library";
 import { PLAN_MAX_HEIGHT } from "@/lib/streams";
+import { addUsage, logActivity, thisMonth, watchedTodayMinutes } from "@/lib/extras";
 import { Spinner } from "@/components/auth/ui";
 
 type Props = {
@@ -17,11 +18,12 @@ type Props = {
   episode: number;
   profileId: string;
   planId: string;
-  prefs: { autoplayNext: boolean; dataUsage: "auto" | "saver" | "hd" | "4k"; subtitleSize: "small" | "medium" | "large"; subtitleBg: "none" | "shadow" | "box" };
+  prefs: { autoplayNext: boolean; dataUsage: "auto" | "saver" | "hd" | "4k"; subtitleSize: "small" | "medium" | "large"; subtitleBg: "none" | "shadow" | "box"; dailyLimitMinutes?: number; monthlyDataCapGB?: number };
+  startAt?: number;
 };
 
 type Track = { id: number; label: string };
-type Panel = null | "episodes" | "audio" | "speed" | "quality";
+type Panel = null | "episodes" | "audio" | "speed" | "quality" | "sleep";
 
 const SPEEDS = [0.5, 0.75, 1, 1.25, 1.5];
 const fmt = (s: number) => {
@@ -33,7 +35,7 @@ const fmt = (s: number) => {
 };
 const qualityLabel = (h: number) => (h >= 2160 ? "4K" : h >= 1440 ? "1440p" : `${h}p`);
 
-export default function Player({ title, sources, extraSubs = [], intro, season, episode, profileId, planId, prefs }: Props) {
+export default function Player({ title, sources, extraSubs = [], intro, season, episode, profileId, planId, prefs, startAt }: Props) {
   const router = useRouter();
   const wrapRef = useRef<HTMLDivElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -78,6 +80,12 @@ export default function Player({ title, sources, extraSubs = [], intro, season, 
   const [scrub, setScrub] = useState<number | null>(null);
   const [hover, setHover] = useState<{ x: number; t: number } | null>(null);
   const [flash, setFlash] = useState<string | null>(null);
+  const [sleepAt, setSleepAt] = useState<number | "end" | null>(null);
+  const [blocked, setBlocked] = useState<null | "sleep" | "limit" | "still">(null);
+  const [notice, setNotice] = useState("");
+  const lastTick = useRef<number | null>(null);
+  const logged = useRef(false);
+  const capWarned = useRef(false);
 
   /* ---------------- Progress ---------------- */
   const save = useCallback(
@@ -104,7 +112,7 @@ export default function Player({ title, sources, extraSubs = [], intro, season, 
     if (!v) return;
     const src = sources[srcIdx];
     const saved = readProgress(profileId, title.id);
-    const resumeAt =
+    const resumeAt = startAt !== undefined ? startAt :
       saved && saved.time && (saved.season ?? 1) === season && (saved.episode ?? 1) === episode ? saved.time : 0;
 
     setError("");
@@ -175,7 +183,7 @@ export default function Player({ title, sources, extraSubs = [], intro, season, 
       v.removeAttribute("src");
       v.load();
     };
-  }, [sources, srcIdx, profileId, title.id, season, episode, maxHeight, prefs.dataUsage]);
+  }, [sources, srcIdx, profileId, title.id, season, episode, maxHeight, prefs.dataUsage, startAt]);
 
   // Save on leave
   useEffect(() => {
@@ -327,6 +335,21 @@ export default function Player({ title, sources, extraSubs = [], intro, season, 
     setPanel(null);
   };
 
+  const shareMoment = () => {
+    const base = window.location.pathname.replace(/\/watch\/?$/, "");
+    const url = `${window.location.origin}${base}/watch/?id=${title.id}${isSeries ? `&s=${season}&e=${episode}` : ""}&t=${Math.floor(videoRef.current?.currentTime ?? 0)}`;
+    navigator.clipboard?.writeText(url).then(
+      () => setNotice("Link copied. Friends will start from this exact moment."),
+      () => setNotice(url),
+    );
+  };
+
+  useEffect(() => {
+    if (!notice) return;
+    const id = setTimeout(() => setNotice(""), 3500);
+    return () => clearTimeout(id);
+  }, [notice]);
+
   /* ---------------- Keyboard ---------------- */
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -378,7 +401,14 @@ export default function Player({ title, sources, extraSubs = [], intro, season, 
       setCountdown((c) => {
         if (c <= 1) {
           clearInterval(id);
-          goEpisode(nextEp.season, nextEp.episode);
+          // Netflix-style "Are you still watching?" after 3 autoplayed episodes in a row
+          let chain = 0;
+          try {
+            chain = Number(sessionStorage.getItem("myflix.autoplayChain") ?? "0") + 1;
+            sessionStorage.setItem("myflix.autoplayChain", String(chain));
+          } catch {}
+          if (chain >= 3) setBlocked("still");
+          else goEpisode(nextEp.season, nextEp.episode);
           return 0;
         }
         return c - 1;
@@ -440,6 +470,11 @@ export default function Player({ title, sources, extraSubs = [], intro, season, 
         onPlay={() => {
           setPlaying(true);
           setEnded(false);
+          lastTick.current = performance.now();
+          if (!logged.current) {
+            logged.current = true;
+            logActivity(profileId, { titleId: title.id, season: isSeries ? season : undefined, episode: isSeries ? episode : undefined });
+          }
         }}
         onPause={() => {
           setPlaying(false);
@@ -454,6 +489,24 @@ export default function Player({ title, sources, extraSubs = [], intro, season, 
           setCurrent(v.currentTime);
           if (v.buffered.length) setBuffered(v.buffered.end(v.buffered.length - 1));
           save();
+          // Data meter + screen time
+          const t = performance.now();
+          if (!v.paused && lastTick.current !== null) addUsage(profileId, (t - lastTick.current) / 1000, actualHeight || v.videoHeight);
+          lastTick.current = t;
+          if (prefs.dailyLimitMinutes && watchedTodayMinutes(profileId) >= prefs.dailyLimitMinutes) {
+            v.pause();
+            setBlocked("limit");
+          }
+          if (prefs.monthlyDataCapGB && !capWarned.current && thisMonth(profileId).gb >= prefs.monthlyDataCapGB) {
+            capWarned.current = true;
+            setNotice(`You've reached your ${prefs.monthlyDataCapGB} GB monthly data limit. Switched to Data Saver.`);
+            chooseQuality("saver");
+          }
+          if (typeof sleepAt === "number" && Date.now() >= sleepAt) {
+            v.pause();
+            setSleepAt(null);
+            setBlocked("sleep");
+          }
         }}
         onDurationChange={(e) => setDuration(e.currentTarget.duration)}
         onVolumeChange={(e) => {
@@ -464,6 +517,10 @@ export default function Player({ title, sources, extraSubs = [], intro, season, 
           setEnded(true);
           setShowUi(true);
           save(true);
+          if (sleepAt === "end") {
+            setSleepAt(null);
+            setBlocked("sleep");
+          }
         }}
       >
         {extraSubs.map((x, i) => (
@@ -493,6 +550,34 @@ export default function Player({ title, sources, extraSubs = [], intro, season, 
           <p className="max-w-md text-lg">{error}</p>
           <div className="flex gap-3">
             <button onClick={() => { setError(""); setSrcIdx(0); }} className="rounded bg-white px-6 py-2 font-semibold text-ink">Try Again</button>
+            <button onClick={exit} className="rounded border border-white/60 px-6 py-2">Back to Browse</button>
+          </div>
+        </div>
+      )}
+
+      {/* Notices */}
+      {notice && <div role="status" className="absolute left-1/2 top-20 z-20 -translate-x-1/2 rounded-md bg-white px-4 py-2 text-sm font-medium text-ink shadow-xl">{notice}</div>}
+
+      {/* Blocking prompts: sleep timer, screen-time limit, still watching */}
+      {blocked && (
+        <div className="absolute inset-0 z-30 flex flex-col items-center justify-center gap-4 bg-black/85 px-6 text-center">
+          <p className="text-2xl font-bold">
+            {blocked === "sleep" ? "Sleep timer ended" : blocked === "limit" ? "That's all for today" : `Are you still watching ${title.title}?`}
+          </p>
+          <p className="max-w-md text-white/70">
+            {blocked === "sleep"
+              ? "Good night! We've paused so you don't miss anything."
+              : blocked === "limit"
+                ? `This profile has a ${prefs.dailyLimitMinutes}-minute daily viewing limit. A parent can change it in Account, Profiles.`
+                : "We paused to save your data in case you fell asleep."}
+          </p>
+          <div className="flex gap-3">
+            {blocked === "still" && nextEp && (
+              <button onClick={() => { try { sessionStorage.setItem("myflix.autoplayChain", "0"); } catch {} setBlocked(null); goEpisode(nextEp.season, nextEp.episode); }} className="rounded bg-white px-6 py-2 font-semibold text-ink">Continue Watching</button>
+            )}
+            {blocked === "sleep" && (
+              <button onClick={() => { setBlocked(null); videoRef.current?.play(); }} className="rounded bg-white px-6 py-2 font-semibold text-ink">Keep Watching</button>
+            )}
             <button onClick={exit} className="rounded border border-white/60 px-6 py-2">Back to Browse</button>
           </div>
         </div>
@@ -602,6 +687,8 @@ export default function Player({ title, sources, extraSubs = [], intro, season, 
           {nextEp && <CtrlBtn label="Next episode" onClick={() => goEpisode(nextEp.season, nextEp.episode)}><IcNext /></CtrlBtn>}
           {isSeries && <CtrlBtn label="Episodes" active={panel === "episodes"} onClick={() => setPanel(panel === "episodes" ? null : "episodes")}><IcEpisodes /></CtrlBtn>}
           <CtrlBtn label="Audio and subtitles" active={panel === "audio"} onClick={() => setPanel(panel === "audio" ? null : "audio")}><IcSubs /></CtrlBtn>
+          <CtrlBtn label="Sleep timer" active={panel === "sleep" || sleepAt !== null} onClick={() => setPanel(panel === "sleep" ? null : "sleep")}><IcMoon /></CtrlBtn>
+          <CtrlBtn label="Share this moment" onClick={shareMoment}><IcShare /></CtrlBtn>
           <CtrlBtn label="Playback speed" active={panel === "speed"} onClick={() => setPanel(panel === "speed" ? null : "speed")}><IcSpeed /></CtrlBtn>
           <CtrlBtn label="Video quality" active={panel === "quality"} onClick={() => setPanel(panel === "quality" ? null : "quality")}>
             <span className="rounded border border-current px-1 text-[11px] font-bold leading-4">{quality === "saver" ? "DS" : (actualHeight || 0) >= 2160 ? "4K" : "HD"}</span>
@@ -653,6 +740,18 @@ export default function Player({ title, sources, extraSubs = [], intro, season, 
                 {!subTracks.length && !extraSubs.length && <p className="mt-1 text-xs text-white/50">No subtitles for this title yet.</p>}
               </div>
             </div>
+          )}
+
+          {panel === "sleep" && (
+            <>
+              <p className="mb-1 font-bold">Sleep Timer</p>
+              <p className="mb-3 text-xs text-white/60">{sleepAt === null ? "Off" : sleepAt === "end" ? "Stops at the end of this episode" : `Stops at ${new Date(sleepAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`}</p>
+              <Opt on={sleepAt === null} onClick={() => { setSleepAt(null); setPanel(null); }}>Off</Opt>
+              {[15, 30, 45, 60].map((m) => (
+                <Opt key={m} on={false} onClick={() => { setSleepAt(Date.now() + m * 60000); setPanel(null); setNotice(`Sleep timer set for ${m} minutes.`); }}>{m} minutes</Opt>
+              ))}
+              <Opt on={sleepAt === "end"} onClick={() => { setSleepAt("end"); setPanel(null); setNotice(isSeries ? "Playback stops after this episode." : "Playback stops at the end."); }}>{isSeries ? "End of episode" : "End of film"}</Opt>
+            </>
           )}
 
           {panel === "speed" && (
@@ -729,5 +828,7 @@ const IcNext = ({ className = S }) => (<svg viewBox="0 0 24 24" className={class
 const IcEpisodes = ({ className = S }) => (<svg viewBox="0 0 24 24" className={className} fill="none" stroke="currentColor" strokeWidth="1.8"><rect x="3" y="7" width="14" height="13" rx="1.5" /><path d="M7 4h13a1 1 0 0 1 1 1v11" strokeLinecap="round" /></svg>);
 const IcSubs = ({ className = S }) => (<svg viewBox="0 0 24 24" className={className} fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"><rect x="3" y="5" width="18" height="14" rx="2" /><path d="M7 13h4M13 13h4M7 16h7" /></svg>);
 const IcSpeed = ({ className = S }) => (<svg viewBox="0 0 24 24" className={className} fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"><path d="M4.5 18a9 9 0 1 1 15 0" /><path d="m12 13 4-5" /><circle cx="12" cy="13" r="1.3" fill="currentColor" /></svg>);
+const IcMoon = ({ className = S }) => (<svg viewBox="0 0 24 24" className={className} fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round"><path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5z" /></svg>);
+const IcShare = ({ className = S }) => (<svg viewBox="0 0 24 24" className={className} fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><circle cx="18" cy="5" r="2.5" /><circle cx="6" cy="12" r="2.5" /><circle cx="18" cy="19" r="2.5" /><path d="m8.2 10.8 7.6-4.4M8.2 13.2l7.6 4.4" /></svg>);
 const IcFs = ({ className = S }) => (<svg viewBox="0 0 24 24" className={className} fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5" /></svg>);
 const IcFsExit = ({ className = S }) => (<svg viewBox="0 0 24 24" className={className} fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M9 4v5H4M15 4v5h5M9 20v-5H4M15 20v-5h5" /></svg>);

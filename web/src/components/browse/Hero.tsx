@@ -7,7 +7,7 @@ import { InfoIcon, PlayIcon } from "./icons";
 export default function Hero({ title: t, onPlay, onInfo }: { title: Title; onPlay: (t: Title) => void; onInfo: (t: Title) => void }) {
   return (
     <section className="relative h-[78vh] min-h-[460px] w-full overflow-hidden sm:h-[88vh] lg:h-[56.25vw] lg:max-h-[92vh]">
-      <Image src={img(t.backdrop || t.image, 1920, 1080)} alt="" fill priority sizes="100vw" className="object-cover object-center" />
+      <Image src={img(t.backdrop || t.image, 1920, 1080)} alt="" fill priority sizes="100vw" className="kenburns object-cover object-center" />
       <div className="absolute inset-0 bg-gradient-to-r from-black/85 via-black/35 to-transparent" />
       <div className="absolute inset-x-0 bottom-0 h-48 bg-gradient-to-t from-ink to-transparent" />
 

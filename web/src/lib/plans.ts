@@ -10,6 +10,7 @@ export type Plan = {
   screens: number;
   downloads: number;
   badge?: string;
+  annualDiscount?: number;
 };
 
 export const plans: Plan[] = [
@@ -33,5 +34,7 @@ if (typeof window !== "undefined") {
 }
 
 export const naira = (n: number) => `₦${n.toLocaleString("en-NG")}`;
+
+export const annualPrice = (p: Plan) => Math.round(p.price * 12 * (1 - (p.annualDiscount ?? 15) / 100));
 
 export const getPlan = (id?: PlanId | null) => plans.find((p) => p.id === id);

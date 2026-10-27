@@ -18,6 +18,8 @@ export type ProfileSettings = {
   autoplayNext: boolean;
   autoplayPreviews: boolean;
   dataUsage: DataUsage;
+  dailyLimitMinutes?: number;
+  monthlyDataCapGB?: number;
   subtitleSize: "small" | "medium" | "large";
   subtitleBg: "none" | "shadow" | "box";
 };
@@ -64,6 +66,10 @@ export type Account = {
   notifications?: NotificationPrefs;
   profiles: Profile[];
   suspended?: boolean;
+  billingCycle?: "monthly" | "annual";
+  credit?: number;
+  promo?: { code: string; label: string };
+  referredBy?: string;
 };
 
 export const defaultSettings = (kids: boolean): ProfileSettings => ({
@@ -185,16 +191,18 @@ export async function choosePlan(planId: PlanId) {
   return update((a) => ({ ...a, planId }));
 }
 
-export async function completePayment(method: PaymentMethod, last4?: string) {
+export async function completePayment(method: PaymentMethod, last4?: string, opts: { annual?: boolean; amount?: number; freeMonths?: number; promo?: { code: string; label: string } } = {}) {
   await wait(1500);
   const now = new Date();
   const renews = new Date(now);
-  renews.setMonth(renews.getMonth() + 1);
+  renews.setMonth(renews.getMonth() + (opts.annual ? 12 : 1) + (opts.freeMonths ?? 0));
   return update((a) => ({
     ...a,
+    billingCycle: opts.annual ? "annual" : "monthly",
+    promo: opts.promo,
     payment: { method, last4, paidAt: now.toISOString(), renewsAt: renews.toISOString() },
     billing: [
-      { id: `INV-${Date.now().toString().slice(-8)}`, date: now.toISOString(), amount: planPrice(a.planId), planId: a.planId ?? "standard", method, last4, status: "Paid" as const },
+      { id: `INV-${Date.now().toString().slice(-8)}`, date: now.toISOString(), amount: opts.amount ?? planPrice(a.planId), planId: a.planId ?? "standard", method, last4, status: "Paid" as const },
       ...(a.billing ?? []),
     ],
     devices: a.devices ?? [thisDevice()],
@@ -204,7 +212,16 @@ export async function completePayment(method: PaymentMethod, last4?: string) {
 /* ---------------- Account management ---------------- */
 
 const PRICES: Record<string, number> = { mobile: 1500, basic: 2500, standard: 4000, premium: 5500 };
-const planPrice = (id?: PlanId) => PRICES[id ?? "standard"] ?? 0;
+const planPrice = (id?: PlanId) => {
+  try {
+    const live = JSON.parse(localStorage.getItem("myflix.admin.plans") ?? "[]") as { id: string; price: number }[];
+    const p = live.find((x) => x.id === id);
+    if (p) return p.price;
+  } catch {
+    /* defaults */
+  }
+  return PRICES[id ?? "standard"] ?? 0;
+};
 
 function thisDevice(): Device {
   const ua = typeof navigator !== "undefined" ? navigator.userAgent : "";
@@ -293,6 +310,15 @@ export async function removeDevice(id: string) {
 export async function updateProfile(profile: Profile) {
   await wait(500);
   return update((a) => ({ ...a, profiles: a.profiles.map((p) => (p.id === profile.id ? profile : p)) }));
+}
+
+export async function addCredit(amount: number) {
+  await wait(300);
+  return update((a) => ({ ...a, credit: (a.credit ?? 0) + amount }));
+}
+
+export async function setReferredBy(code: string) {
+  return update((a) => ({ ...a, referredBy: code }));
 }
 
 export async function updateNotifications(n: NotificationPrefs) {

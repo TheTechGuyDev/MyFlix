@@ -5,6 +5,8 @@ import Avatar from "@/components/auth/Avatar";
 import { getPlan, naira } from "@/lib/plans";
 import { devicesOf } from "@/lib/mock-auth";
 import { Card, LinkRow, PageTitle, fmtDate, useAccountCtx } from "./AccountShell";
+import { DataMeter } from "./Extras";
+import { naira as nairaFmt } from "@/lib/plans";
 
 export const methodLabel = (m?: string, last4?: string) =>
   m === "card" ? `Card ending in ${last4 ?? "••••"}` : m === "transfer" ? "Bank transfer" : m === "ussd" ? "USSD" : "None";
@@ -23,7 +25,8 @@ export default function Overview() {
           {cancelled ? `Membership ends ${fmtDate(account.cancelAt)}` : "Membership details"}
         </div>
         <p className="text-xl font-bold">{plan?.name} plan</p>
-        <p className="text-neutral-600">{plan ? `${naira(plan.price)}/month · ${plan.resolution}` : ""}</p>
+        <p className="text-neutral-600">{plan ? `${naira(plan.price)}/month · ${plan.resolution}${account.billingCycle === "annual" ? " · billed yearly" : ""}` : ""}</p>
+        {account.promo && <p className="mt-1 text-sm text-brand">Promo applied: {account.promo.label}</p>}
         <p className="mt-3 text-sm text-neutral-600">
           {cancelled ? "You won't be charged again." : `Next payment: ${fmtDate(account.payment?.renewsAt)}`}
         </p>
@@ -35,12 +38,21 @@ export default function Overview() {
           <LinkRow href="/account/plan" label="Change plan" />
           <LinkRow href="/account/payment" label="Manage payment method" />
           <LinkRow href="/account/billing" label="Billing history" sub="Receipts for every payment" />
+          <LinkRow href="/account/gift" label="Redeem gift card" sub={`Credit: ${nairaFmt(account.credit ?? 0)}`} />
           {cancelled ? (
             <LinkRow href="/account/cancel" label="Restart membership" />
           ) : (
             <LinkRow href="/account/cancel" label="Cancel membership" danger />
           )}
         </div>
+      </Card>
+
+      <DataMeter />
+
+      <Card title="Watch everywhere">
+        <LinkRow href="/account/tv" label="Sign in on a TV" sub="Enter the code shown on your Smart TV" />
+        <LinkRow href="/account/activity" label="Viewing activity" sub="History and ratings for each profile" />
+        <LinkRow href="/account/invite" label="Invite friends" sub="You both get a free month" />
       </Card>
 
       <Card title="Security & privacy">
