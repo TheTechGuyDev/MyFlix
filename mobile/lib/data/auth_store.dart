@@ -159,4 +159,85 @@ class AuthStore extends ChangeNotifier {
   }
 
   Future<void> save() => _persist();
+
+  /* ---------------- Account management ---------------- */
+  Future<void> changePlan(String planId) async {
+    await _wait(700);
+    account?.planId = planId;
+    await _persist();
+  }
+
+  Future<void> cancelMembership() async {
+    await _wait(700);
+    final a = account;
+    if (a == null) return;
+    a.cancelAt = a.payment?.renewsAt ?? DateTime.now().toIso8601String();
+    await _persist();
+  }
+
+  Future<void> restartMembership() async {
+    await _wait(700);
+    account?.cancelAt = null;
+    await _persist();
+  }
+
+  Future<void> updatePaymentMethod(String method, {String? last4}) async {
+    await _wait(900);
+    final p = account?.payment;
+    if (p == null) return;
+    account!.payment = Payment(method: method, last4: last4, paidAt: p.paidAt, renewsAt: p.renewsAt);
+    await _persist();
+  }
+
+  Future<String?> changeEmail(String newEmail, String password) async {
+    await _wait(700);
+    final a = account;
+    if (a == null) return 'Your session has expired. Please sign in again.';
+    if (a.passwordHash != _hash(password)) return 'Incorrect password.';
+    final e = _norm(newEmail);
+    if (e != a.email && _users.containsKey(e)) return 'Another account already uses this email.';
+    _users.remove(a.email);
+    a.email = e;
+    _users[e] = a;
+    _session = e;
+    await _persist();
+    return null;
+  }
+
+  Future<String?> changePassword(String current, String next) async {
+    await _wait(700);
+    final a = account;
+    if (a == null) return 'Your session has expired. Please sign in again.';
+    if (a.passwordHash != _hash(current)) return 'Your current password is incorrect.';
+    a.passwordHash = _hash(next);
+    await _persist();
+    return null;
+  }
+
+  Future<void> updatePhone(String phone) async {
+    await _wait(400);
+    account?.phone = phone;
+    await _persist();
+  }
+
+  Future<void> updateNotifications(Map<String, bool> n) async {
+    account?.notifications = n;
+    await _persist();
+  }
+
+  final List<Map<String, String>> _removedDevices = [];
+  List<Map<String, String>> devices() {
+    final now = DateTime.now();
+    final all = [
+      {'id': 'this', 'name': kIsWeb ? 'MyFlix web app' : 'This phone (MyFlix app)', 'location': 'Lagos, Nigeria', 'last': now.toIso8601String(), 'current': '1'},
+      {'id': 'tv', 'name': 'Samsung Smart TV', 'location': 'Lagos, Nigeria', 'last': now.subtract(const Duration(days: 1)).toIso8601String()},
+      {'id': 'web', 'name': 'Chrome on Windows', 'location': 'Ibadan, Nigeria', 'last': now.subtract(const Duration(days: 3)).toIso8601String()},
+    ];
+    return all.where((d) => !_removedDevices.any((r) => r['id'] == d['id'])).toList();
+  }
+
+  void removeDevice(String id) {
+    _removedDevices.add({'id': id});
+    notifyListeners();
+  }
 }

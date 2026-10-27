@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import 'data/auth_store.dart';
 import 'data/catalog.dart';
+import 'data/library_store.dart';
 import 'router.dart';
 import 'theme.dart';
 
@@ -12,12 +13,19 @@ Future<void> main() async {
   await Catalog.load();
   final auth = AuthStore();
   await auth.init();
-  runApp(MyFlixApp(auth: auth));
+  final lib = LibraryStore();
+  await lib.init();
+  // Keep the library in sync with the active profile
+  void sync() => lib.loadProfile(auth.activeProfile?.id, kids: auth.activeProfile?.kids ?? false);
+  sync();
+  auth.addListener(sync);
+  runApp(MyFlixApp(auth: auth, lib: lib));
 }
 
 class MyFlixApp extends StatefulWidget {
   final AuthStore auth;
-  const MyFlixApp({super.key, required this.auth});
+  final LibraryStore lib;
+  const MyFlixApp({super.key, required this.auth, required this.lib});
   @override
   State<MyFlixApp> createState() => _MyFlixAppState();
 }
@@ -27,8 +35,11 @@ class _MyFlixAppState extends State<MyFlixApp> {
 
   @override
   Widget build(BuildContext context) {
-    return ChangeNotifierProvider.value(
-      value: widget.auth,
+    return MultiProvider(
+      providers: [
+        ChangeNotifierProvider.value(value: widget.auth),
+        ChangeNotifierProvider.value(value: widget.lib),
+      ],
       child: MaterialApp.router(
         title: 'MyFlix',
         debugShowCheckedModeBanner: false,

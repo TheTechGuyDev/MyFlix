@@ -1,8 +1,15 @@
+import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'data/auth_store.dart';
 import 'screens/auth/sign_in.dart';
 import 'screens/auth/signup.dart';
-import 'screens/home_placeholder.dart';
+import 'screens/main/account.dart';
+import 'screens/main/browse_more.dart';
+import 'screens/main/details.dart';
+import 'screens/main/home.dart';
+import 'screens/main/my_myflix.dart';
+import 'screens/main/player.dart';
+import 'screens/main/shell.dart';
 import 'screens/onboarding.dart';
 import 'screens/profiles.dart';
 import 'screens/splash.dart';
@@ -18,8 +25,7 @@ GoRouter buildRouter(AuthStore auth) {
       if (!signedIn) return public.contains(loc) ? null : '/login';
       if (loc == '/') return null;
       final next = auth.nextStep();
-      // Signed-in users can't revisit sign-in pages; unfinished signups are sent to the right step
-      if (loc == '/login' || loc == '/welcome' || loc == '/signup') return next;
+      if (loc == '/login' || loc == '/welcome' || loc == '/signup' || loc == '/forgot') return next;
       if (loc.startsWith('/signup/')) {
         const order = ['/signup/plan', '/signup/payment', '/signup/profiles'];
         final want = order.indexOf(next);
@@ -29,7 +35,8 @@ GoRouter buildRouter(AuthStore auth) {
         return null;
       }
       if (next.startsWith('/signup')) return next;
-      if (loc == '/home' && auth.activeProfile == null) return '/profiles';
+      if (loc == '/profiles') return null;
+      if (auth.activeProfile == null) return '/profiles';
       return null;
     },
     routes: [
@@ -42,7 +49,42 @@ GoRouter buildRouter(AuthStore auth) {
       GoRoute(path: '/signup/payment', builder: (_, _) => const PaymentScreen()),
       GoRoute(path: '/signup/profiles', builder: (_, _) => const ProfileSetupScreen()),
       GoRoute(path: '/profiles', builder: (_, _) => const WhoIsWatchingScreen()),
-      GoRoute(path: '/home', builder: (_, _) => const HomePlaceholder()),
+      StatefulShellRoute.indexedStack(
+        builder: (_, _, nav) => MainShell(nav: nav),
+        branches: [
+          StatefulShellBranch(routes: [GoRoute(path: '/home', builder: (_, _) => const HomeScreen())]),
+          StatefulShellBranch(routes: [GoRoute(path: '/new', builder: (_, _) => const NewHotScreen())]),
+          StatefulShellBranch(routes: [GoRoute(path: '/me', builder: (_, _) => const MyMyFlixScreen())]),
+        ],
+      ),
+      GoRoute(path: '/search', builder: (_, _) => const SearchScreen()),
+      GoRoute(path: '/title/:id', builder: (_, s) => DetailsScreen(id: s.pathParameters['id']!)),
+      GoRoute(
+        path: '/watch/:id',
+        pageBuilder: (_, s) => MaterialPage(
+          fullscreenDialog: true,
+          child: PlayerScreen(
+            id: s.pathParameters['id']!,
+            season: int.tryParse(s.uri.queryParameters['s'] ?? ''),
+            episode: int.tryParse(s.uri.queryParameters['e'] ?? ''),
+          ),
+        ),
+      ),
+      GoRoute(path: '/category/:genre', builder: (_, s) => CategoryScreen(genre: Uri.decodeComponent(s.pathParameters['genre']!))),
+      GoRoute(path: '/mylist', builder: (_, _) => const MyListScreen()),
+      GoRoute(path: '/downloads', builder: (_, _) => const DownloadsScreen()),
+      GoRoute(path: '/notifications', builder: (_, _) => const NotificationsScreen()),
+      GoRoute(path: '/account', builder: (_, _) => const AccountScreen()),
+      GoRoute(path: '/account/plan', builder: (_, _) => const ChangePlanScreen()),
+      GoRoute(path: '/account/payment', builder: (_, _) => const ManagePaymentScreen()),
+      GoRoute(path: '/account/billing', builder: (_, _) => const BillingScreen()),
+      GoRoute(path: '/account/cancel', builder: (_, _) => const CancelScreen()),
+      GoRoute(path: '/account/security', builder: (_, _) => const SecurityScreen()),
+      GoRoute(path: '/account/devices', builder: (_, _) => const DevicesScreen()),
+      GoRoute(path: '/account/notifications', builder: (_, _) => const NotificationPrefsScreen()),
+      GoRoute(path: '/profile-settings/:id', builder: (_, s) => ProfileSettingsScreen(id: s.pathParameters['id']!)),
+      GoRoute(path: '/app-settings', builder: (_, _) => const AppSettingsScreen()),
+      GoRoute(path: '/help', builder: (_, _) => const HelpScreen()),
     ],
   );
 }
