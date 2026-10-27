@@ -14,7 +14,8 @@ import {
   settingsOf,
   signOutAllDevices,
   updateNotifications,
-  updatePhone,
+  confirmPhone,
+  requestPhoneCode,
   updateProfile,
   type DataUsage,
   type Maturity,
@@ -22,6 +23,7 @@ import {
   type ProfileSettings,
 } from "@/lib/mock-auth";
 import { languages } from "@/lib/landing-data";
+import { enablePush, pushNotify, pushPermission, prettyPhone } from "@/lib/messaging";
 import { Card, LinkRow, PageTitle, Toggle, fmtDate, useAccountCtx } from "./AccountShell";
 
 /* ---------------- Security ---------------- */
@@ -34,9 +36,11 @@ export function Security() {
   const [c, setC] = useState("");
   const [err, setErr] = useState("");
   const [loading, setLoading] = useState(false);
+  const [codeSentTo, setCodeSentTo] = useState("");
 
   const open = (m: typeof mode) => {
     setMode(m);
+    setCodeSentTo("");
     setA(m === "phone" ? account.phone ?? "" : "");
     setB("");
     setC("");
@@ -65,11 +69,18 @@ export function Security() {
       if (!r.ok) return setErr(r.error);
       toast("Password changed.");
     } else if (mode === "phone") {
-      if (!/^(\+234|0)[789][01]\d{8}$/.test(a.replace(/\s/g, ""))) return setErr("Enter a valid Nigerian phone number.");
       setLoading(true);
-      await updatePhone(a.replace(/\s/g, ""));
+      if (!codeSentTo) {
+        const r = await requestPhoneCode(a);
+        setLoading(false);
+        if (!r.ok) return setErr(r.error);
+        setCodeSentTo(r.data);
+        return;
+      }
+      const r = await confirmPhone(a, b);
       setLoading(false);
-      toast("Phone number saved.");
+      if (!r.ok) return setErr(r.error);
+      toast("Phone number verified. You can now sign in with a code sent to it.");
     }
     refresh();
     setMode(null);
@@ -81,7 +92,7 @@ export function Security() {
       <Card>
         <LinkRow label="Email" sub={account.email} onClick={() => open("email")} />
         <LinkRow label="Password" sub="••••••••" onClick={() => open("password")} />
-        <LinkRow label="Mobile phone" sub={account.phone ?? "Add a phone number for account recovery"} onClick={() => open("phone")} />
+        <LinkRow label="Mobile phone" sub={account.phone ? `${prettyPhone(account.phone)} · Verified` : "Add a phone number to sign in with SMS codes and recover your account"} onClick={() => open("phone")} />
       </Card>
 
       {mode && (
@@ -101,9 +112,19 @@ export function Security() {
                 <Field label="Re-enter new password" revealable value={c} onChange={(e) => setC(e.target.value)} />
               </>
             )}
-            {mode === "phone" && <Field label="Phone number (e.g. 0803 123 4567)" type="tel" value={a} onChange={(e) => setA(e.target.value)} />}
+            {mode === "phone" && (
+              <>
+                <Field label="Phone number (e.g. 0803 123 4567)" type="tel" value={a} disabled={Boolean(codeSentTo)} onChange={(e) => setA(e.target.value)} />
+                {codeSentTo && (
+                  <>
+                    <p className="text-sm text-neutral-600">We texted a 6-digit code to {codeSentTo}.</p>
+                    <Field label="6-digit code" inputMode="numeric" maxLength={6} value={b} onChange={(e) => setB(e.target.value.replace(/\D/g, ""))} />
+                  </>
+                )}
+              </>
+            )}
             <div className="flex gap-3 pt-2">
-              <PrimaryButton onClick={submit} loading={loading} className="!h-11 !w-32 !text-base">Save</PrimaryButton>
+              <PrimaryButton onClick={submit} loading={loading} className="!h-11 !w-32 !text-base">{mode === "phone" ? (codeSentTo ? "Verify" : "Send code") : "Save"}</PrimaryButton>
               <button onClick={() => setMode(null)} className="h-11 rounded border border-neutral-400 px-5 font-semibold">Cancel</button>
             </div>
           </div>
@@ -185,8 +206,29 @@ export function Notifications() {
         <Toggle on={n.billing} onChange={(v) => set("billing", v)} label="Billing and account" sub="Receipts, payment issues and security alerts" />
       </Card>
       <Card title="Push notifications">
-        <Toggle on={n.push} onChange={(v) => set("push", v)} label="Allow push notifications" sub="On phones and tablets with the MyFlix app" />
+        <Toggle on={n.push} onChange={(v) => set("push", v)} label="Allow push notifications" sub="On this browser and on phones and tablets with the MyFlix app" />
+        <BrowserPush email={account.email} />
       </Card>
+    </div>
+  );
+}
+
+function BrowserPush({ email }: { email: string }) {
+  const [perm, setPerm] = useState(() => pushPermission());
+  return (
+    <div className="mt-4 rounded-lg bg-neutral-100 p-4 text-sm">
+      <p className="font-semibold">This browser</p>
+      <p className="mt-1 text-neutral-600">
+        {perm === "granted" ? "Notifications are on. You'll hear about new episodes, reminders and account alerts." : perm === "denied" ? "Notifications are blocked. Allow them for this site in your browser settings." : perm === "unsupported" ? "This browser doesn't support notifications." : "Turn on notifications to hear about new episodes and reminders."}
+      </p>
+      <div className="mt-3 flex flex-wrap gap-2">
+        {perm === "default" && (
+          <button onClick={async () => setPerm(await enablePush())} className="h-10 rounded bg-brand px-4 font-semibold text-white hover:bg-brand-hover">Turn on notifications</button>
+        )}
+        {perm === "granted" && (
+          <button onClick={() => pushNotify(email, "MyFlix test notification", "Notifications are working on this device.", "/browse")} className="h-10 rounded border border-neutral-900 px-4 font-semibold">Send a test</button>
+        )}
+      </div>
     </div>
   );
 }
@@ -268,7 +310,7 @@ export function ProfileSettingsPage() {
         <select value={s.language} onChange={(e) => patch({ language: e.target.value })} className="h-12 w-full max-w-sm rounded border border-neutral-400 bg-white px-3">
           {languages.map((l) => <option key={l}>{l}</option>)}
         </select>
-        <p className="mt-2 text-sm text-neutral-500">Used for the app and as the default audio and subtitle language where available.</p>
+        <p className="mt-2 text-sm text-neutral-500">Display language for menus, rows and the player on the website, app and TV, and the default audio and subtitle language where available. Yorùbá, Hausa, Igbo and Pidgin are available.</p>
       </Card>
 
       <Card title="Viewing restrictions">

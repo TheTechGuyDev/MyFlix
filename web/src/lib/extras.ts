@@ -173,3 +173,19 @@ export function campaignNotices() {
     .filter((c) => c.status === "sent" && (c.channel === "push" || c.channel === "in_app"))
     .map((c) => ({ id: c.id, head: c.subject, body: c.body, titleId: c.titleId, at: c.sentAt ?? "" }));
 }
+
+/* ---------------- Remind Me (Coming Soon) ---------------- */
+export const remindersOf = (pid: string) => read<string[]>(`myflix.reminders.${pid}`, []);
+export function toggleReminder(pid: string, id: string) {
+  const list = remindersOf(pid);
+  const next = list.includes(id) ? list.filter((x) => x !== id) : [...list, id];
+  write(`myflix.reminders.${pid}`, next);
+  return next;
+}
+/** Titles that have launched since the profile asked to be reminded. Removes them from the list. */
+export function takeDueReminders(pid: string, isReleased: (id: string) => boolean) {
+  const list = remindersOf(pid);
+  const due = list.filter(isReleased);
+  if (due.length) write(`myflix.reminders.${pid}`, list.filter((x) => !due.includes(x)));
+  return due;
+}

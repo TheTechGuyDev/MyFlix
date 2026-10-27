@@ -6,10 +6,11 @@ import { useEffect, useState } from "react";
 import Avatar from "@/components/auth/Avatar";
 import { PrimaryButton } from "@/components/auth/ui";
 import { byId, img } from "@/lib/catalog";
-import { activityOf, clearActivity, hideActivity, redeemGift, referralCode, thisMonth, validTvCode, watchedTodayMinutes, type ActivityItem } from "@/lib/extras";
+import { activityOf, clearActivity, hideActivity, redeemGift, referralCode, thisMonth, watchedTodayMinutes, type ActivityItem } from "@/lib/extras";
 import { addCredit, getActiveProfileId, settingsOf } from "@/lib/mock-auth";
 import { naira } from "@/lib/plans";
 import { Card, PageTitle, fmtDate, useAccountCtx } from "./AccountShell";
+import { addTvDevice, formatTvCode, pairTvCode } from "@/lib/tv";
 
 const RATED = "myflix.lib.";
 
@@ -210,8 +211,8 @@ export function Invite() {
 
 /* ---------------- TV sign-in ---------------- */
 export function TvLink() {
-  const { account, toast } = useAccountCtx();
-  const [code, setCode] = useState("");
+  const { account, refresh, toast } = useAccountCtx();
+  const [code, setCode] = useState(() => (typeof window === "undefined" ? "" : formatTvCode(new URLSearchParams(location.search).get("code") ?? "")));
   const [done, setDone] = useState(false);
   const [err, setErr] = useState("");
   return (
@@ -228,7 +229,7 @@ export function TvLink() {
           <div className="max-w-md">
             <input
               value={code}
-              onChange={(e) => setCode(e.target.value.replace(/\D/g, "").slice(0, 8).replace(/(\d{4})(\d)/, "$1 $2"))}
+              onChange={(e) => setCode(formatTvCode(e.target.value))}
               inputMode="numeric"
               placeholder="1234 5678"
               aria-label="TV code"
@@ -238,19 +239,19 @@ export function TvLink() {
             <PrimaryButton
               className="mt-4"
               onClick={() => {
-                if (!validTvCode(code)) return setErr("Enter the 8 digits shown on your TV.");
-                try {
-                  const users = JSON.parse(localStorage.getItem("myflix.users") ?? "{}");
-                  const a = users[account.email];
-                  a.devices = [...(a.devices ?? []), { id: `tv-${Date.now()}`, name: "Smart TV (linked with code)", location: "Lagos, Nigeria", lastUsed: new Date().toISOString() }];
-                  localStorage.setItem("myflix.users", JSON.stringify(users));
-                } catch {}
+                const r = pairTvCode(code, account.email);
+                if (!r.ok) return setErr(r.error);
+                addTvDevice(account.email);
+                refresh();
                 setDone(true);
                 toast("TV signed in.");
               }}
             >
               Sign in TV
             </PrimaryButton>
+            <p className="mt-4 text-sm text-neutral-500">
+              No Smart TV app yet? Open <Link href="/tv" target="_blank" className="font-semibold text-brand hover:underline">MyFlix for TV</Link> on your TV&apos;s web browser.
+            </p>
           </div>
         )}
       </Card>

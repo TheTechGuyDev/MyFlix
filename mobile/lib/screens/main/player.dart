@@ -11,7 +11,13 @@ import '../../data/auth_store.dart';
 import '../../data/catalog.dart';
 import '../../data/library_store.dart';
 import '../../data/models.dart';
+import '../../data/cast.dart';
+import '../../data/live.dart';
+import '../../data/native.dart';
+import '../../data/protect.dart';
+import '../../i18n.dart';
 import '../../theme.dart';
+import '../../widgets/cast.dart';
 
 class PlayerScreen extends StatefulWidget {
   final String id;
@@ -37,7 +43,13 @@ class _PlayerScreenState extends State<PlayerScreen> {
   double? _drag;
   DateTime? _lastTick, _sleepAt;
   bool _sleepEnd = false, _capWarned = false, _logged = false;
-  String? _blocked; // sleep | limit | still
+  String? _blocked; // sleep | limit | still | screens | stopped
+  late final Account account = context.read<AuthStore>().account!;
+  final String _streamId = AuthStore.newId();
+  List<Map<String, dynamic>> _others = [];
+  int _beat = 0;
+  File? _plainTemp;
+  int _wm = 0;
   static int _autoplayChain = 0;
 
   @override
@@ -51,8 +63,13 @@ class _PlayerScreenState extends State<PlayerScreen> {
       SystemChrome.setPreferredOrientations([DeviceOrientation.landscapeLeft, DeviceOrientation.landscapeRight]);
       SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
     }
+    if (Protection.screenshotBlock) Native.secure(true);
     _load();
-    _saveTimer = Timer.periodic(const Duration(seconds: 5), (_) => _save());
+    _saveTimer = Timer.periodic(const Duration(seconds: 5), (_) {
+      _save();
+      _wm = (_wm + 1) % 16;
+      if (_c?.value.isPlaying == true && ++_beat % 2 == 0) _claim();
+    });
   }
 
   ({int season, int episode})? get _next {
@@ -95,7 +112,12 @@ class _PlayerScreenState extends State<PlayerScreen> {
 
     final candidates = <VideoPlayerController Function()>[];
     if (!kIsWeb && dl?.state == DlState.done && dl?.path != null && File(dl!.path!).existsSync()) {
-      candidates.add(() => VideoPlayerController.file(File(dl.path!), closedCaptionFile: _captions()));
+      // Encrypted downloads are decrypted to a temporary file only while playing
+      try {
+        _plainTemp = dl.path!.endsWith('.mfx') ? await Protect.decryptToTemp(dl.path!) : File(dl.path!);
+        final f = _plainTemp!;
+        candidates.add(() => VideoPlayerController.file(f, closedCaptionFile: _captions()));
+      } catch (_) {}
     }
     for (final s in Catalog.sourcesFor(t)) {
       candidates.add(() => VideoPlayerController.networkUrl(Uri.parse(s), formatHint: s.endsWith('.m3u8') ? VideoFormat.hls : null, closedCaptionFile: _captions()));
@@ -112,6 +134,10 @@ class _PlayerScreenState extends State<PlayerScreen> {
         _offline = i == 0 && candidates.length > Catalog.sourcesFor(t).length;
         if (resume > 0 && resume < c.value.duration.inSeconds - 30) await c.seekTo(Duration(milliseconds: (resume * 1000).round()));
         c.addListener(_tick);
+        if (!_claim()) {
+          setState(() => _c = c);
+          return;
+        }
         await c.play();
         if (!_logged) {
           _logged = true;
@@ -125,6 +151,26 @@ class _PlayerScreenState extends State<PlayerScreen> {
       }
     }
     if (mounted) setState(() => _error = "We're having trouble playing this title right now. Check your connection and try again.");
+  }
+
+  /// Concurrent stream check + heartbeat. Returns false if this screen may not play.
+  bool _claim() {
+    final screens = Catalog.plan(account.planId)?.screens ?? 1;
+    final r = LiveStreams.claim(id: _streamId, email: account.email, profile: profile.name, titleId: t.id, title: t.title, screens: screens);
+    if (r == null) return true;
+    _c?.pause();
+    setState(() {
+      _blocked = r == 'stopped' ? 'stopped' : 'screens';
+      _others = LiveStreams.active(account.email, except: _streamId);
+    });
+    return false;
+  }
+
+  void _castNow(String device) {
+    final c = _c;
+    CastStore.instance.cast(t.id, t.isSeries ? '${t.title} S$_season:E$_episode' : t.title, from: c?.value.position ?? Duration.zero);
+    c?.pause();
+    if (mounted) context.pop();
   }
 
   void _tick() {
@@ -239,6 +285,10 @@ class _PlayerScreenState extends State<PlayerScreen> {
     _saveTimer?.cancel();
     _countdownTimer?.cancel();
     _c?.dispose();
+    LiveStreams.release(_streamId);
+    Native.secure(false);
+    final tmp = _plainTemp;
+    if (tmp != null && tmp.path.contains('/play_') && tmp.existsSync()) tmp.deleteSync();
     if (!kIsWeb) {
       SystemChrome.setPreferredOrientations(DeviceOrientation.values);
       SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
@@ -284,6 +334,14 @@ class _PlayerScreenState extends State<PlayerScreen> {
               },
         child: Stack(fit: StackFit.expand, children: [
           if (c != null) Center(child: AspectRatio(aspectRatio: v!.aspectRatio, child: VideoPlayer(c))),
+          if (c != null && Protection.watermark)
+            IgnorePointer(
+              child: AnimatedAlign(
+                duration: const Duration(seconds: 2),
+                alignment: const [Alignment(-0.7, -0.6), Alignment(0.7, -0.3), Alignment(-0.6, 0.5), Alignment(0.6, 0.6)][_wm ~/ 4],
+                child: Text('${account.email.split('@').first} · $_streamId', style: const TextStyle(color: Color(0x26FFFFFF), fontSize: 12, fontFamily: 'monospace')),
+              ),
+            ),
           if (c != null && _subs && (v?.caption.text.isNotEmpty ?? false))
             Positioned(
               left: 40,
@@ -360,7 +418,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
                         ),
                         if (_offline)
                           const Padding(padding: EdgeInsets.only(right: 12), child: Row(children: [Icon(Icons.download_done, size: 18, color: AppColors.brandBright), SizedBox(width: 4), Text('Offline', style: TextStyle(fontSize: 12))])),
-                        const SizedBox(width: 48),
+                        CastButton(onConnected: _castNow),
                       ]),
                       const Spacer(),
                       // Centre controls
@@ -413,7 +471,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
                             _Btn(icon: Icons.lock_outline, label: 'Lock', onTap: () => setState(() => _locked = true)),
                             _Btn(icon: Icons.bedtime_outlined, label: _sleepAt != null || _sleepEnd ? 'Sleep (on)' : 'Sleep timer', onTap: () => _sheet((ctx) => _sleepSheet(ctx))),
                             _Btn(icon: Icons.share_outlined, label: 'Share moment', onTap: _share),
-                            if (t.isSeries) _Btn(icon: Icons.video_library_outlined, label: 'Episodes', onTap: () => _sheet((ctx) => _episodesSheet(ctx))),
+                            if (t.isSeries) _Btn(icon: Icons.video_library_outlined, label: context.tr('Episodes'), onTap: () => _sheet((ctx) => _episodesSheet(ctx))),
                             _Btn(icon: Icons.subtitles_outlined, label: 'Audio & Subtitles', onTap: () => _sheet((ctx) => _audioSheet(ctx))),
                             if (next != null) _Btn(icon: Icons.skip_next, label: 'Next Ep.', onTap: () => _goEpisode(next.season, next.episode)),
                           ]),
@@ -431,13 +489,25 @@ class _PlayerScreenState extends State<PlayerScreen> {
                 padding: const EdgeInsets.all(24),
                 child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
                   Text(
-                    _blocked == 'sleep' ? 'Sleep timer ended' : _blocked == 'limit' ? "That's all for today" : 'Are you still watching ${t.title}?',
+                    _blocked == 'sleep'
+                        ? 'Sleep timer ended'
+                        : _blocked == 'limit'
+                            ? "That's all for today"
+                            : _blocked == 'screens'
+                                ? 'Too many people are using your account right now'
+                                : _blocked == 'stopped'
+                                    ? 'Playback stopped'
+                                    : 'Are you still watching ${t.title}?',
                     textAlign: TextAlign.center,
                     style: const TextStyle(fontSize: 22, fontWeight: FontWeight.w800),
                   ),
                   const SizedBox(height: 8),
                   Text(
-                    _blocked == 'sleep'
+                    _blocked == 'screens'
+                        ? 'Your plan allows ${Catalog.plan(account.planId)?.screens ?? 1} screen(s) at a time. Stop a stream below or upgrade your plan.'
+                        : _blocked == 'stopped'
+                        ? 'Someone on your account, or MyFlix support, stopped this stream.'
+                        : _blocked == 'sleep'
                         ? "Good night! We've paused so you don't miss anything."
                         : _blocked == 'limit'
                             ? 'This profile has a ${profile.settings.dailyLimitMinutes}-minute daily limit. A parent can change it in Profile Settings.'
@@ -445,8 +515,35 @@ class _PlayerScreenState extends State<PlayerScreen> {
                     textAlign: TextAlign.center,
                     style: const TextStyle(color: Colors.white70),
                   ),
+                  if (_blocked == 'screens')
+                    for (final o in _others)
+                      Container(
+                        margin: const EdgeInsets.only(top: 10),
+                        constraints: const BoxConstraints(maxWidth: 420),
+                        padding: const EdgeInsets.fromLTRB(14, 6, 6, 6),
+                        decoration: BoxDecoration(color: Colors.white10, borderRadius: BorderRadius.circular(8)),
+                        child: Row(children: [
+                          Expanded(child: Text('${o['profile']} on ${o['device']}\nWatching ${o['title']}', style: const TextStyle(fontSize: 13))),
+                          TextButton(
+                            onPressed: () {
+                              LiveStreams.stop(o['id']);
+                              setState(() => _others.removeWhere((x) => x['id'] == o['id']));
+                            },
+                            child: const Text('Stop', style: TextStyle(color: Colors.white)),
+                          ),
+                        ]),
+                      ),
                   const SizedBox(height: 20),
                   Wrap(spacing: 12, children: [
+                    if (_blocked == 'screens')
+                      FilledButton(
+                        style: FilledButton.styleFrom(backgroundColor: Colors.white, foregroundColor: AppColors.ink),
+                        onPressed: () {
+                          setState(() => _blocked = null);
+                          if (_claim()) _c?.play();
+                        },
+                        child: const Text('Try Again'),
+                      ),
                     if (_blocked == 'still' && next != null)
                       FilledButton(
                         style: FilledButton.styleFrom(backgroundColor: Colors.white, foregroundColor: AppColors.ink),
@@ -455,7 +552,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
                           setState(() => _blocked = null);
                           _goEpisode(next.season, next.episode);
                         },
-                        child: const Text('Continue Watching'),
+                        child: Text(context.tr('Continue Watching')),
                       ),
                     if (_blocked == 'sleep')
                       FilledButton(
@@ -479,7 +576,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
               child: OutlinedButton(
                 onPressed: () => c?.seekTo(Duration(seconds: _intro.end.toInt())),
                 style: OutlinedButton.styleFrom(backgroundColor: Colors.black54, side: const BorderSide(color: Colors.white, width: 1.5), padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 14)),
-                child: const Text('Skip Intro', style: TextStyle(color: Colors.white, fontWeight: FontWeight.w700, fontSize: 15)),
+                child: Text(context.tr('Skip Intro'), style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w700, fontSize: 15)),
               ),
             ),
 
@@ -491,7 +588,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
                 onPressed: () => _goEpisode(next.season, next.episode),
                 style: FilledButton.styleFrom(backgroundColor: Colors.white, foregroundColor: AppColors.ink, padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 14)),
                 icon: const Icon(Icons.skip_next),
-                label: Text(_ended && s.autoplayNext ? 'Next Episode in $_countdown' : 'Next Episode', style: const TextStyle(fontWeight: FontWeight.w700)),
+                label: Text(_ended && s.autoplayNext ? '${context.tr('Next Episode')} · $_countdown' : context.tr('Next Episode'), style: const TextStyle(fontWeight: FontWeight.w700)),
               ),
             ),
         ]),

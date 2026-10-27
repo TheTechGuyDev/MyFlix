@@ -97,6 +97,47 @@ export default function CurationPage() {
           ))}
         </div>
       </Card>
+
+      <Card>
+        <CardTitle
+          title="Clips feed"
+          sub="Short vertical moments members swipe through in Clips (website and app). Leave empty to use an automatic mix."
+          right={
+            <div className="flex gap-2">
+              {(cur.clips?.length ?? 0) > 0 && <Button size="sm" variant="ghost" onClick={() => set({ clips: undefined })}>Use automatic</Button>}
+              <Button size="sm" variant="soft" icon={<Plus size={14} />} onClick={() => set({ clips: [...(cur.clips ?? []), { id: uid("clip-"), titleId: titles[0].id, start: 0, end: 20, caption: "" }] })}>Add clip</Button>
+            </div>
+          }
+        />
+        {(cur.clips?.length ?? 0) === 0 ? (
+          <p className="text-sm text-slate-500">Automatic: a 20-second moment from each of the newest titles.</p>
+        ) : (
+          <div className="space-y-3">
+            {cur.clips!.map((k, i) => {
+              const t = byId(k.titleId);
+              const upd = (p: Partial<typeof k>) => set({ clips: cur.clips!.map((x) => (x.id === k.id ? { ...x, ...p } : x)) });
+              return (
+                <div key={k.id} className="flex flex-wrap items-end gap-3 rounded-xl border border-slate-200/80 p-3 dark:border-white/10">
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  {t && <img src={img(t.image, 90, 160)} alt="" className="h-20 w-[45px] rounded object-cover" />}
+                  <Field label="Title" className="min-w-48 flex-1">
+                    <Select value={k.titleId} onChange={(e) => upd({ titleId: e.target.value })}>
+                      {titles.map((x) => <option key={x.id} value={x.id}>{x.title}</option>)}
+                    </Select>
+                  </Field>
+                  <Field label="Start (sec)" className="w-24"><Input type="number" min={0} value={k.start} onChange={(e) => upd({ start: Math.max(0, Number(e.target.value)) })} /></Field>
+                  <Field label="End (sec)" className="w-24"><Input type="number" min={k.start + 5} value={k.end} onChange={(e) => upd({ end: Math.max(k.start + 5, Number(e.target.value)) })} /></Field>
+                  <Field label="Caption" className="min-w-56 flex-[2]"><Input value={k.caption} maxLength={80} placeholder="e.g. Wait for it…" onChange={(e) => upd({ caption: e.target.value })} /></Field>
+                  <div className="flex gap-1">
+                    <IconBtn title="Move up" disabled={i === 0} onClick={() => { const c2 = [...cur.clips!]; [c2[i - 1], c2[i]] = [c2[i], c2[i - 1]]; set({ clips: c2 }); }}><ArrowUp size={15} /></IconBtn>
+                    <IconBtn title="Delete clip" danger onClick={() => set({ clips: cur.clips!.filter((x) => x.id !== k.id) })}><Trash2 size={15} /></IconBtn>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </Card>
     </div>
   );
 }

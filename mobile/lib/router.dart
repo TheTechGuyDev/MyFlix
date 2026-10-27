@@ -5,6 +5,7 @@ import 'screens/auth/sign_in.dart';
 import 'screens/auth/signup.dart';
 import 'screens/main/account.dart';
 import 'screens/main/browse_more.dart';
+import 'screens/main/clips.dart';
 import 'screens/main/details.dart';
 import 'screens/main/extras.dart';
 import 'screens/main/home.dart';
@@ -16,13 +17,14 @@ import 'screens/profiles.dart';
 import 'screens/splash.dart';
 
 GoRouter buildRouter(AuthStore auth) {
-  const public = {'/', '/welcome', '/login', '/forgot', '/signup'};
+  const public = {'/', '/welcome', '/login', '/forgot', '/signup', '/reset'};
   return GoRouter(
     initialLocation: '/',
     refreshListenable: auth,
     redirect: (context, state) {
       final loc = state.matchedLocation;
       final signedIn = auth.account != null;
+      if (loc == '/reset') return null;
       if (!signedIn) return public.contains(loc) ? null : '/login';
       if (loc == '/') return null;
       final next = auth.nextStep();
@@ -45,6 +47,7 @@ GoRouter buildRouter(AuthStore auth) {
       GoRoute(path: '/welcome', builder: (_, _) => const OnboardingScreen()),
       GoRoute(path: '/login', builder: (_, _) => const SignInScreen()),
       GoRoute(path: '/forgot', builder: (_, _) => const ForgotScreen()),
+      GoRoute(path: '/reset', builder: (_, s) => ResetPasswordScreen(token: s.uri.queryParameters['token'] ?? '')),
       GoRoute(path: '/signup', builder: (_, _) => const CreateAccountScreen()),
       GoRoute(path: '/signup/plan', builder: (_, _) => const PlanScreen()),
       GoRoute(path: '/signup/payment', builder: (_, _) => const PaymentScreen()),
@@ -55,6 +58,7 @@ GoRouter buildRouter(AuthStore auth) {
         branches: [
           StatefulShellBranch(routes: [GoRoute(path: '/home', builder: (_, _) => const HomeScreen())]),
           StatefulShellBranch(routes: [GoRoute(path: '/new', builder: (_, _) => const NewHotScreen())]),
+          StatefulShellBranch(routes: [GoRoute(path: '/clips', builder: (_, _) => const ClipsScreen())]),
           StatefulShellBranch(routes: [GoRoute(path: '/me', builder: (_, _) => const MyMyFlixScreen())]),
         ],
       ),

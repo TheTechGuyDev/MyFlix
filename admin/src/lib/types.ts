@@ -209,6 +209,7 @@ export type Curation = {
   heroKids?: string;
   rows: { id: string; title: string; titleIds: string[]; enabled: boolean }[];
   top10?: string[];
+  clips?: { id: string; titleId: string; start: number; end: number; caption: string }[];
 };
 
 export type Settings = {
@@ -232,6 +233,8 @@ export type Settings = {
   dataSaverDefault: boolean;
   watermarkEnabled: boolean;
   drmEnabled: boolean;
+  screenshotBlock: boolean;
+  streamLimitEnforced: boolean;
   geoRestrictNigeria: boolean;
   announcement: string;
 };

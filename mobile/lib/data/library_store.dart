@@ -7,6 +7,7 @@ import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'catalog.dart';
+import 'protect.dart';
 
 class Progress {
   final double pct; // 0-100
@@ -307,7 +308,9 @@ class LibraryStore extends ChangeNotifier {
       final dir = await getApplicationDocumentsDirectory();
       final folder = Directory('${dir.path}/downloads');
       if (!folder.existsSync()) folder.createSync(recursive: true);
-      final file = File('${folder.path}/${_profile}_${item.key.replaceAll('|', '_')}.mp4');
+      // Stored encrypted (.mfx) so the file can't be copied off the phone and played elsewhere
+      final file = File('${folder.path}/${_profile}_${item.key.replaceAll('|', '_')}.mfx');
+      final enc = await Protect.cipher();
       final req = http.Request('GET', Uri.parse(Catalog.demoMp4));
       final res = await http.Client().send(req);
       if (res.statusCode != 200) throw Exception('HTTP ${res.statusCode}');
@@ -317,7 +320,7 @@ class LibraryStore extends ChangeNotifier {
       final completer = Completer<void>();
       _active[item.key] = res.stream.listen(
         (chunk) {
-          sink.add(chunk);
+          sink.add(enc(chunk, received));
           received += chunk.length;
           if (total > 0) {
             item.progress = received / total;

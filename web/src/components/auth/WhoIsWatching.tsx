@@ -5,8 +5,10 @@ import { useEffect, useRef, useState } from "react";
 import Logo from "@/components/landing/Logo";
 import { getAccount, MAX_PROFILES, newId, nextStep, saveProfiles, setActiveProfile, type Profile } from "@/lib/mock-auth";
 import Avatar, { avatarColors } from "./Avatar";
+import { useT } from "@/lib/i18n";
 
 export default function WhoIsWatching() {
+  const tx = useT();
   const router = useRouter();
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [ready, setReady] = useState(false);
@@ -43,7 +45,7 @@ export default function WhoIsWatching() {
         <Logo />
       </header>
       <main className="flex flex-1 flex-col items-center justify-center px-4 pb-20 text-center">
-        <h1 className="text-3xl font-medium sm:text-5xl">{manage ? "Manage Profiles" : "Who's watching?"}</h1>
+        <h1 className="text-3xl font-medium sm:text-5xl">{tx(manage ? "Manage Profiles" : "Who's watching?")}</h1>
         <ul className="mt-8 flex flex-wrap justify-center gap-5 sm:gap-8">
           {profiles.map((p) => (
             <li key={p.id}>
@@ -69,7 +71,7 @@ export default function WhoIsWatching() {
                 <span className="flex h-24 w-24 items-center justify-center rounded-md text-muted transition group-hover:bg-white group-hover:text-ink sm:h-36 sm:w-36">
                   <svg viewBox="0 0 24 24" className="h-16 w-16" fill="currentColor"><circle cx="12" cy="12" r="11" fillOpacity=".2" /><path d="M11 6h2v5h5v2h-5v5h-2v-5H6v-2h5z" /></svg>
                 </span>
-                <span className="text-base text-muted group-hover:text-white sm:text-xl">Add Profile</span>
+                <span className="text-base text-muted group-hover:text-white sm:text-xl">{tx("Add Profile")}</span>
               </button>
             </li>
           )}

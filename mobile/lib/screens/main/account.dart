@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:provider/provider.dart';
 import '../../data/auth_store.dart';
+import '../../data/messages.dart';
 import '../../data/catalog.dart';
 import '../../data/library_store.dart';
 import '../../data/models.dart';
@@ -106,7 +107,7 @@ class AccountScreen extends StatelessWidget {
         ]),
         _Section(title: 'SECURITY & PRIVACY', children: [
           _row('Email', sub: a.email, onTap: () => context.push('/account/security')),
-          _row('Password & phone', sub: a.phone ?? 'Add a phone number for recovery', onTap: () => context.push('/account/security')),
+          _row('Password & phone', sub: a.phone != null ? prettyPhone(a.phone!) : 'Add a phone number for SMS sign-in', onTap: () => context.push('/account/security')),
           _row('Devices', sub: '${auth.devices().length} signed in', onTap: () => context.push('/account/devices')),
           _row('Notification preferences', onTap: () => context.push('/account/notifications')),
         ]),
@@ -386,7 +387,7 @@ class SecurityScreen extends StatelessWidget {
     final a = TextEditingController(text: mode == 'phone' ? auth.account?.phone ?? '' : '');
     final b = TextEditingController();
     final c = TextEditingController();
-    String? err;
+    String? err, sentTo;
     bool loading = false;
     await showModalBottomSheet(
       context: context,
@@ -411,9 +412,17 @@ class SecurityScreen extends StatelessWidget {
               const SizedBox(height: 10),
               AppField(label: 'Re-enter new password', controller: c, password: true),
             ],
-            if (mode == 'phone') AppField(label: 'Phone number (e.g. 0803 123 4567)', controller: a, keyboard: TextInputType.phone),
+            if (mode == 'phone') ...[
+              AppField(label: 'Phone number (e.g. 0803 123 4567)', controller: a, keyboard: TextInputType.phone),
+              if (sentTo != null) ...[
+                const SizedBox(height: 10),
+                Text('We texted a 6-digit code to $sentTo.', style: const TextStyle(color: AppColors.muted)),
+                const SizedBox(height: 8),
+                AppField(label: '6-digit code', controller: b, keyboard: TextInputType.number),
+              ],
+            ],
             const SizedBox(height: 16),
-            PrimaryButton('Save', loading: loading, onPressed: () async {
+            PrimaryButton(mode == 'phone' ? (sentTo == null ? 'Send code' : 'Verify') : 'Save', loading: loading, onPressed: () async {
               String? e;
               if (mode == 'email') {
                 e = validateEmail(a.text) ?? (b.text.isEmpty ? 'Enter your password to confirm.' : null);
@@ -428,12 +437,17 @@ class SecurityScreen extends StatelessWidget {
                   e = await auth.changePassword(a.text, b.text);
                 }
               } else {
-                final ph = a.text.replaceAll(' ', '');
-                e = RegExp(r'^(\+234|0)[789][01]\d{8}$').hasMatch(ph) ? null : 'Enter a valid Nigerian phone number.';
-                if (e == null) {
-                  set(() => loading = true);
-                  await auth.updatePhone(ph);
+                set(() => loading = true);
+                if (sentTo == null) {
+                  final (er, to) = await auth.requestPhoneCode(a.text);
+                  set(() {
+                    loading = false;
+                    err = er;
+                    sentTo = to;
+                  });
+                  return;
                 }
+                e = await auth.confirmPhone(a.text, b.text);
               }
               if (e != null) {
                 set(() {
@@ -462,7 +476,7 @@ class SecurityScreen extends StatelessWidget {
         _Section(children: [
           _row('Email', sub: a.email, onTap: () => _form(context, 'email')),
           _row('Password', sub: '••••••••', onTap: () => _form(context, 'password')),
-          _row('Mobile phone', sub: a.phone ?? 'Add for account recovery', onTap: () => _form(context, 'phone')),
+          _row('Mobile phone', sub: a.phone != null ? '${prettyPhone(a.phone!)} · Verified' : 'Add to sign in with SMS codes and recover your account', onTap: () => _form(context, 'phone')),
         ]),
         _Section(title: 'SIGN OUT EVERYWHERE', children: [
           ListTile(

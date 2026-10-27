@@ -243,8 +243,10 @@ export function seedSettings(): Settings {
     maxDownloadsPerDevice: 25,
     downloadExpiryDays: 30,
     dataSaverDefault: false,
-    watermarkEnabled: false,
-    drmEnabled: false,
+    watermarkEnabled: true,
+    drmEnabled: true,
+    screenshotBlock: true,
+    streamLimitEnforced: true,
     geoRestrictNigeria: false,
     announcement: "",
   };

@@ -1,3 +1,4 @@
+import T from "@/components/T";
 import Image from "next/image";
 import Header from "./Header";
 import EmailCapture from "./EmailCapture";
@@ -25,12 +26,12 @@ export default function Hero() {
 
       <div className="mx-auto flex min-h-[560px] max-w-3xl flex-col items-center justify-center px-6 pb-20 pt-10 text-center sm:min-h-[640px] lg:pb-28">
         <span className="mb-5 rounded-full border border-brand-bright/40 bg-brand/15 px-3 py-1 text-xs font-semibold uppercase tracking-widest text-brand-bright">
-          Now streaming in Nigeria
+          <T>Now streaming in Nigeria</T>
         </span>
         <h1 className="text-4xl font-black leading-tight tracking-tight sm:text-5xl lg:text-6xl">
-          Nollywood, Hollywood and everything in between
+          <T>Nollywood, Hollywood and everything in between</T>
         </h1>
-        <p className="mt-4 text-lg font-medium sm:text-2xl">Plans from ₦1,500. Cancel whenever you like.</p>
+        <p className="mt-4 text-lg font-medium sm:text-2xl"><T>Plans from ₦1,500. Cancel whenever you like.</T></p>
         <div className="mt-8 w-full">
           <EmailCapture />
         </div>

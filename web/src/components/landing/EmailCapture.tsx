@@ -2,11 +2,13 @@
 
 import { useId, useState } from "react";
 import { useRouter } from "next/navigation";
+import { useT } from "@/lib/i18n";
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
 
 export default function EmailCapture() {
   const router = useRouter();
+  const t = useT();
   const id = useId();
   const [email, setEmail] = useState("");
   const [error, setError] = useState("");
@@ -30,7 +32,7 @@ export default function EmailCapture() {
   return (
     <form onSubmit={onSubmit} noValidate className="w-full">
       <p className="mb-4 text-base text-white sm:text-lg">
-        Ready to watch? Enter your email to create or restart your membership.
+        {t("Ready to watch? Enter your email to create or restart your membership.")}
       </p>
       <div className="flex flex-col items-center gap-3 sm:flex-row sm:items-start sm:justify-center">
         <div className="w-full sm:max-w-md">
@@ -59,7 +61,7 @@ export default function EmailCapture() {
               htmlFor={id}
               className="pointer-events-none absolute left-4 top-1.5 text-xs text-muted transition-all peer-placeholder-shown:top-4 peer-placeholder-shown:text-base peer-focus:top-1.5 peer-focus:text-xs"
             >
-              Email address
+              {t("Email address")}
             </label>
           </div>
           {error && (
@@ -75,7 +77,7 @@ export default function EmailCapture() {
           type="submit"
           className="inline-flex h-12 shrink-0 items-center gap-2 rounded bg-brand px-6 text-lg font-semibold text-white transition hover:bg-brand-hover sm:h-14 sm:px-7 sm:text-2xl"
         >
-          Get Started
+          {t("Get Started")}
           <svg aria-hidden viewBox="0 0 24 24" className="h-5 w-5 sm:h-6 sm:w-6" fill="none" stroke="currentColor" strokeWidth="2.5">
             <path d="m9 5 7 7-7 7" />
           </svg>

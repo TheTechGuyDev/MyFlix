@@ -2,7 +2,8 @@
 
 import { Bell, Mail, MessageSquare, Plus, Send, Smartphone } from "lucide-react";
 import { useState } from "react";
-import { Badge, Button, Card, Field, Input, Modal, PageHeader, Select, Stat, Table, Td, Textarea, statusTone, useToast } from "@/components/ui";
+import { Badge, Button, Card, Empty, Field, Input, Modal, PageHeader, Select, Stat, Table, Tabs, Td, Textarea, statusTone, useToast } from "@/components/ui";
+import { readLocal, useLocal, writeLocal, type OutMsg } from "@/lib/local";
 import { dateTime, img, num } from "@/lib/format";
 import { allMembers, remove, uid, upsert, useDb } from "@/lib/store";
 import type { Campaign } from "@/lib/types";
@@ -34,6 +35,9 @@ export default function CampaignsPage() {
   const members = useDb((d) => allMembers(d));
   const toast = useToast();
   const [edit, setEdit] = useState<Campaign | null>(null);
+  const [tab, setTab] = useState<"campaigns" | "log">("campaigns");
+  const [chan, setChan] = useState<"all" | OutMsg["channel"]>("all");
+  const outbox = useLocal<OutMsg[]>("myflix.outbox", [], 4000);
   const sent = campaigns.filter((c) => c.status === "sent");
   const reach = sent.reduce((a, c) => a + c.reach, 0);
   const opens = sent.reduce((a, c) => a + c.opens, 0);
@@ -50,6 +54,10 @@ export default function CampaignsPage() {
       status,
       ...(status === "sent" ? { sentAt: new Date().toISOString(), reach: r, opens: Math.round(r * (edit.channel === "push" ? 0.46 : edit.channel === "sms" ? 0.9 : 0.38)), clicks: Math.round(r * (edit.channel === "email" ? 0.11 : 0.19)) } : {}),
     };
+    if (status === "sent" && c.channel !== "in_app") {
+      const msg: OutMsg = { id: uid("m"), channel: c.channel === "push" ? "push" : c.channel, kind: "campaign", to: `${num(r)} members · ${c.audience}`, subject: c.subject, body: c.body, at: new Date().toISOString() };
+      writeLocal("myflix.outbox", [msg, ...readLocal<OutMsg[]>("myflix.outbox", [])].slice(0, 300));
+    }
     upsert("campaigns", c, status === "sent" ? `Sent ${c.channel} campaign` : status === "scheduled" ? "Scheduled campaign" : "Saved campaign draft", c.name);
     toast(status === "sent" ? `Sent to ${num(r)} members.` : "Campaign saved.");
     setEdit(null);
@@ -64,6 +72,35 @@ export default function CampaignsPage() {
         <Stat label="Open rate" value={`${reach ? ((opens / reach) * 100).toFixed(1) : 0}%`} />
         <Stat label="Click rate" value={`${reach ? ((clicks / reach) * 100).toFixed(1) : 0}%`} />
       </div>
+      <Tabs tabs={[{ id: "campaigns", label: "Campaigns", count: campaigns.length }, { id: "log", label: "Delivery log", count: outbox.length }]} value={tab} onChange={setTab} />
+      {tab === "log" ? (
+        <Card pad={false}>
+          <div className="flex flex-wrap items-center justify-between gap-3 p-5 pb-3">
+            <p className="text-sm text-slate-500">Every email, SMS and push the platform sends: sign-in codes, password resets, receipts, security alerts, reminders and campaigns. With the backend these go through the email/SMS provider.</p>
+            <Select value={chan} onChange={(e) => setChan(e.target.value as typeof chan)} aria-label="Channel" className="!w-40">
+              <option value="all">All channels</option>
+              <option value="email">Email</option>
+              <option value="sms">SMS</option>
+              <option value="push">Push</option>
+            </Select>
+          </div>
+          {outbox.filter((m) => chan === "all" || m.channel === chan).length === 0 ? (
+            <Empty title="Nothing sent yet" sub="Sign up, reset a password or request a sign-in code on the MyFlix site and the message appears here." />
+          ) : (
+            <Table head={["When", "Channel", "Type", "To", "Message"]} minW={860}>
+              {outbox.filter((m) => chan === "all" || m.channel === chan).map((m) => (
+                <tr key={m.id} className="align-top hover:bg-white/40 dark:hover:bg-white/5">
+                  <Td className="whitespace-nowrap text-xs">{dateTime(m.at)}</Td>
+                  <Td><Badge tone="info">{icon(m.channel === "push" ? "push" : m.channel)} {m.channel}</Badge></Td>
+                  <Td className="capitalize">{m.kind}</Td>
+                  <Td className="text-xs">{m.to}</Td>
+                  <Td><span className="block font-semibold">{m.subject}</span><span className="text-xs text-slate-500">{m.kind === "code" ? m.body.replace(/^\d{6}/, "••••••") : m.body}</span></Td>
+                </tr>
+              ))}
+            </Table>
+          )}
+        </Card>
+      ) : (
       <Card pad={false}>
         <Table head={["Campaign", "Channel", "Audience", "Status", "Reach", "Opens", "Clicks", ""]} minW={900}>
           {campaigns.map((c) => (
@@ -83,6 +120,7 @@ export default function CampaignsPage() {
           ))}
         </Table>
       </Card>
+      )}
 
       <Modal
         open={Boolean(edit)}

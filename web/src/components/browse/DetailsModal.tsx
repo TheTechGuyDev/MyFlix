@@ -1,5 +1,6 @@
 "use client";
 
+import { useT } from "@/lib/i18n";
 import Image from "next/image";
 import { useEffect, useState } from "react";
 import { episodesFor, img, similarTo, type Maturity, type Title } from "@/lib/catalog";
@@ -18,6 +19,7 @@ type Props = {
 };
 
 export default function DetailsModal({ title: t, kids, max = "18+", library, onClose, onPlay, onOpen }: Props) {
+  const tx = useT();
   const [season, setSeason] = useState(1);
   const inList = library.lib.list.includes(t.id);
   const rating = library.lib.ratings[t.id];
@@ -54,7 +56,7 @@ export default function DetailsModal({ title: t, kids, max = "18+", library, onC
             <h2 id="details-title" className="font-display text-5xl leading-none sm:text-7xl">{t.title}</h2>
             <div className="mt-4 flex items-center gap-2">
               <button onClick={() => onPlay(t)} className="flex items-center gap-2 rounded bg-white px-5 py-2 font-bold text-ink hover:bg-white/80 sm:px-7 sm:text-lg">
-                <PlayIcon className="h-6 w-6" /> {progress ? "Resume" : "Play"}
+                <PlayIcon className="h-6 w-6" /> {tx(progress ? "Resume" : "Play")}
               </button>
               <CircleBtn label={inList ? "Remove from My List" : "Add to My List"} onClick={() => library.toggleList(t.id)}>
                 {inList ? <CheckIcon /> : <PlusIcon />}
@@ -105,7 +107,7 @@ export default function DetailsModal({ title: t, kids, max = "18+", library, onC
         {t.type === "series" && (
           <div className="mt-10 px-5 sm:px-12">
             <div className="mb-4 flex items-center justify-between">
-              <h3 className="text-2xl font-bold">Episodes</h3>
+              <h3 className="text-2xl font-bold">{tx("Episodes")}</h3>
               {(t.seasons ?? 1) > 1 && (
                 <select value={season} onChange={(e) => setSeason(Number(e.target.value))} className="rounded border border-white/40 bg-ink-3 px-3 py-2 text-base outline-none">
                   {Array.from({ length: t.seasons ?? 1 }, (_, i) => (

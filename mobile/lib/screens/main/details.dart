@@ -9,6 +9,7 @@ import '../../data/models.dart';
 import '../../theme.dart';
 import '../../widgets/common.dart';
 import '../../widgets/titles.dart';
+import '../../i18n.dart';
 
 Future<void> startDownload(BuildContext context, MediaTitle t, {int? season, int? episode}) async {
   final lib = context.read<LibraryStore>();
@@ -115,7 +116,7 @@ class _DetailsScreenState extends State<DetailsScreen> {
                 ),
               ] else ...[
                 PrimaryButton(
-                  prog != null ? (t.isSeries ? 'Resume S${prog.season}:E${prog.episode}' : 'Resume') : 'Play',
+                  prog != null ? (t.isSeries ? '${context.tr('Resume')} S${prog.season}:E${prog.episode}' : context.tr('Resume')) : context.tr('Play'),
                   icon: Icons.play_arrow,
                   color: Colors.white,
                   textColor: AppColors.ink,
@@ -136,7 +137,7 @@ class _DetailsScreenState extends State<DetailsScreen> {
               Text('Genres: ${t.genres.join(', ')}', style: const TextStyle(color: AppColors.muted, fontSize: 12)),
               const SizedBox(height: 14),
               Row(mainAxisAlignment: MainAxisAlignment.spaceAround, children: [
-                _Action(icon: lib.inList(t.id) ? Icons.check : Icons.add, label: 'My List', onTap: () => lib.toggleList(t.id)),
+                _Action(icon: lib.inList(t.id) ? Icons.check : Icons.add, label: context.tr('My List'), onTap: () => lib.toggleList(t.id)),
                 _RateAction(t: t),
                 _Action(
                   icon: Icons.share_outlined,

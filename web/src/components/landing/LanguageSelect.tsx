@@ -1,10 +1,10 @@
 "use client";
 
-import { useState } from "react";
+import { setGuestLang, useGuestLangName } from "@/lib/i18n";
 import { languages } from "@/lib/landing-data";
 
 export default function LanguageSelect({ compact = false }: { compact?: boolean }) {
-  const [lang, setLang] = useState(languages[0]);
+  const lang = useGuestLangName();
 
   return (
     <label className="relative inline-flex items-center">
@@ -22,7 +22,7 @@ export default function LanguageSelect({ compact = false }: { compact?: boolean 
       </svg>
       <select
         value={lang}
-        onChange={(e) => setLang(e.target.value)}
+        onChange={(e) => setGuestLang(e.target.value)}
         className={`cursor-pointer appearance-none rounded border border-white/40 bg-black/60 py-1.5 pl-9 text-sm font-medium text-white outline-none focus:ring-2 focus:ring-white ${
           compact ? "w-10 pr-1 text-transparent sm:w-auto sm:pr-8 sm:text-white" : "pr-8"
         }`}

@@ -1,5 +1,6 @@
 import Link from "next/link";
 import Logo from "./Logo";
+import T from "@/components/T";
 import LanguageSelect from "./LanguageSelect";
 
 export default function Header() {
@@ -12,7 +13,7 @@ export default function Header() {
           href="/login"
           className="rounded bg-brand px-4 py-1.5 text-sm font-semibold text-white transition hover:bg-brand-hover"
         >
-          Sign In
+          <T>Sign In</T>
         </Link>
       </div>
     </header>

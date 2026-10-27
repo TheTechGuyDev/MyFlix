@@ -15,6 +15,9 @@ import TitleCard from "./TitleCard";
 import DetailsModal from "./DetailsModal";
 import { BellIcon, InfoIcon } from "./icons";
 import { siteSettings } from "@/lib/site-settings";
+import { campaignNotices, remindersOf, takeDueReminders, toggleReminder } from "@/lib/extras";
+import { deliverCampaignPush, pushNotify } from "@/lib/messaging";
+import { useT } from "@/lib/i18n";
 
 const TABS: Tab[] = ["home", "series", "movies", "new", "mylist"];
 const SEED = ["no-witness", "chairmans-son", "danfo-diaries"];
@@ -45,7 +48,19 @@ export default function BrowseApp() {
     if (!p) return router.replace("/profiles");
     setAccount(acc);
     setProfile(p);
+    // Push notifications: admin campaigns and launched "Remind Me" titles
+    if (acc.notifications?.push !== false) {
+      deliverCampaignPush(acc.email, campaignNotices());
+      const due = takeDueReminders(p.id, (id) => Boolean(byId(id)) && !byId(id)!.comingSoon);
+      due.forEach((id) => pushNotify(acc.email, "Now on MyFlix", `${byId(id)!.title} is here. Start watching now.`, `/browse?title=${id}`, "reminder"));
+    }
   }, [router]);
+
+  // Deep link from notifications: /browse?title=ID opens the details
+  const linked = params.get("title");
+  useEffect(() => {
+    if (linked && byId(linked)) setOpen(byId(linked)!);
+  }, [linked]);
 
   const library = useLibrary(profile?.id ?? null, kids ? KIDS_SEED : SEED);
 
@@ -141,7 +156,7 @@ export default function BrowseApp() {
       ) : tab === "mylist" ? (
         <MyList library={library} onOpen={openTitle} onPlay={play} onBrowse={() => setTab("home")} />
       ) : tab === "new" ? (
-        <NewAndPopular library={library} rows={rows} max={max} onOpen={openTitle} onPlay={play} />
+        <NewAndPopular library={library} rows={rows} max={max} onOpen={openTitle} onPlay={play} profileId={profile.id} />
       ) : (
         <>
           <Hero title={featuredFor(tab, kids, max)} onPlay={play} onInfo={openTitle} />
@@ -220,8 +235,9 @@ function MyList({ library, onBrowse, ...rest }: { library: LibraryApi; onOpen: (
   );
 }
 
-function NewAndPopular({ library, rows, max, onOpen, onPlay }: { library: LibraryApi; rows: RowDef[]; max: Maturity; onOpen: (t: Title) => void; onPlay: (t: Title) => void }) {
-  const [reminders, setReminders] = useState<string[]>([]);
+function NewAndPopular({ library, rows, max, onOpen, onPlay, profileId }: { library: LibraryApi; rows: RowDef[]; max: Maturity; onOpen: (t: Title) => void; onPlay: (t: Title) => void; profileId: string }) {
+  const [reminders, setReminders] = useState<string[]>(() => remindersOf(profileId));
+  const tx = useT();
   const fresh: RowDef = { id: "fresh", title: "New on MyFlix", items: catalog.filter((t) => t.isNew && !t.comingSoon && allowedFor(t, max)) };
   const top = rows.find((r) => r.id === "top10");
 
@@ -232,7 +248,7 @@ function NewAndPopular({ library, rows, max, onOpen, onPlay }: { library: Librar
         {top && <Row row={top} library={library} onOpen={onOpen} onPlay={onPlay} />}
       </div>
       <section className="mt-6 px-4 sm:px-10 lg:px-14">
-        <h2 className="mb-4 text-lg font-bold sm:text-xl">Coming Soon</h2>
+        <h2 className="mb-4 text-lg font-bold sm:text-xl">{tx("Coming Soon")}</h2>
         <ul className="space-y-8">
           {comingSoon().filter((t) => allowedFor(t, max)).map((t) => {
             const on = reminders.includes(t.id);
@@ -248,11 +264,11 @@ function NewAndPopular({ library, rows, max, onOpen, onPlay }: { library: Librar
                     <span className="font-display absolute bottom-3 left-4 text-4xl drop-shadow-lg">{t.title}</span>
                   </div>
                   <div className="mt-3 flex items-center gap-6">
-                    <button onClick={() => setReminders((r) => (on ? r.filter((x) => x !== t.id) : [...r, t.id]))} className={`flex flex-col items-center text-xs ${on ? "text-brand-bright" : "text-white/80 hover:text-white"}`}>
-                      <BellIcon className="h-6 w-6" /> {on ? "Reminder set" : "Remind Me"}
+                    <button onClick={() => setReminders(toggleReminder(profileId, t.id))} className={`flex flex-col items-center text-xs ${on ? "text-brand-bright" : "text-white/80 hover:text-white"}`}>
+                      <BellIcon className="h-6 w-6" /> {tx(on ? "Reminder set" : "Remind Me")}
                     </button>
                     <button onClick={() => onOpen(t)} className="flex flex-col items-center text-xs text-white/80 hover:text-white">
-                      <InfoIcon className="h-6 w-6" /> Info
+                      <InfoIcon className="h-6 w-6" /> {tx("Info")}
                     </button>
                   </div>
                   <p className="mt-3 text-sm text-white/60">Coming {t.comingSoon}</p>

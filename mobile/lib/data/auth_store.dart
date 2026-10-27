@@ -4,6 +4,7 @@ import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'catalog.dart';
+import 'messages.dart';
 import 'models.dart';
 
 /// Temporary on-device auth + account store (mirrors the web mock).
@@ -89,6 +90,7 @@ class AuthStore extends ChangeNotifier {
     if (_users.containsKey(e)) return 'An account with this email already exists. Sign in instead.';
     _users[e] = Account(email: e, passwordHash: _hash(password), createdAt: DateTime.now().toIso8601String());
     _session = e;
+    _msg.send(channel: 'email', kind: 'welcome', to: e, subject: 'Welcome to MyFlix', body: 'Your account is ready. Pick a plan to start watching Nollywood hits, series and more.');
     activeProfileId = null;
     await _persist();
     return null;
@@ -111,7 +113,124 @@ class AuthStore extends ChangeNotifier {
     await _persist();
   }
 
-  Future<void> requestPasswordReset(String email) => _wait();
+  /* ---------------- Codes, reset links, phone ---------------- */
+  final Map<String, ({String code, String email, DateTime exp, int tries})> _codes = {};
+  final Map<String, ({String email, DateTime exp})> _resets = {};
+  Messages get _msg => Messages.instance;
+
+  Account? findAccount(String identifier) {
+    if (isPhoneLike(identifier)) {
+      final p = normalPhone(identifier);
+      for (final a in _users.values) {
+        if (a.phone != null && normalPhone(a.phone!) == p) return a;
+      }
+      return null;
+    }
+    return _users[_norm(identifier)];
+  }
+
+  String _issueCode(String key, String email) {
+    final code = (100000 + Random().nextInt(900000)).toString();
+    _codes[key] = (code: code, email: email, exp: DateTime.now().add(const Duration(minutes: 10)), tries: 0);
+    return code;
+  }
+
+  String? _checkCode(String key, String code, void Function(String email) ok) {
+    final c = _codes[key];
+    if (c == null || c.exp.isBefore(DateTime.now())) return 'That code has expired. Request a new one.';
+    if (c.tries >= 5) return 'Too many attempts. Request a new code.';
+    if (c.code != code.trim()) {
+      _codes[key] = (code: c.code, email: c.email, exp: c.exp, tries: c.tries + 1);
+      return "That code isn't right. Check the message and try again.";
+    }
+    _codes.remove(key);
+    ok(c.email);
+    return null;
+  }
+
+  /// Sends a reset link by email, or by SMS when a phone number is given.
+  Future<void> requestPasswordReset(String identifier) async {
+    await _wait();
+    final a = findAccount(identifier);
+    if (a == null) return; // same response either way so accounts can't be discovered
+    final token = newId() + newId();
+    _resets[token] = (email: a.email, exp: DateTime.now().add(const Duration(hours: 1)));
+    final sms = isPhoneLike(identifier);
+    _msg.send(
+      channel: sms ? 'sms' : 'email',
+      kind: 'reset',
+      to: sms ? prettyPhone(normalPhone(identifier)) : a.email,
+      subject: sms ? 'MyFlix password reset' : 'Reset your MyFlix password',
+      body: 'Use the link below to reset your password. It works for 1 hour. If this wasn\'t you, ignore this message.',
+      link: '/reset?token=$token',
+    );
+  }
+
+  String? resetEmail(String token) {
+    final r = _resets[token];
+    return r == null || r.exp.isBefore(DateTime.now()) ? null : r.email;
+  }
+
+  Future<String?> resetPassword(String token, String password) async {
+    await _wait();
+    final email = resetEmail(token);
+    if (email == null || _users[email] == null) return 'This reset link has expired or was already used. Request a new one.';
+    _resets.remove(token);
+    _users[email]!.passwordHash = _hash(password);
+    _session = email;
+    activeProfileId = null;
+    _msg.send(channel: 'email', kind: 'security', to: email, subject: 'Your MyFlix password was changed', body: "Your password was just reset. If you didn't do this, contact help@myflix.ng right away.");
+    await _persist();
+    return null;
+  }
+
+  /// "Use a sign-in code": 6-digit code by SMS (phone) or email. Returns (error, sentTo).
+  Future<(String?, String?)> requestSignInCode(String identifier) async {
+    await _wait();
+    final a = findAccount(identifier);
+    final sms = isPhoneLike(identifier);
+    if (a == null) return (sms ? 'No account uses this phone number. Add your number in Account, Security first.' : "We can't find an account with this email address.", null);
+    final key = sms ? normalPhone(identifier) : a.email;
+    final code = _issueCode(key, a.email);
+    final to = sms ? prettyPhone(key) : a.email;
+    _msg.send(channel: sms ? 'sms' : 'email', kind: 'code', to: to, subject: 'Your MyFlix sign-in code', body: '$code is your MyFlix sign-in code. It expires in 10 minutes. Never share it with anyone.');
+    return (null, to);
+  }
+
+  Future<String?> verifySignInCode(String identifier, String code) async {
+    await _wait(400);
+    final key = isPhoneLike(identifier) ? normalPhone(identifier) : _norm(identifier);
+    String? email;
+    final err = _checkCode(key, code, (e) => email = e);
+    if (err != null) return err;
+    _session = email;
+    activeProfileId = null;
+    await _persist();
+    return null;
+  }
+
+  /// Step 1 of adding a phone: text a code to it. Returns (error, prettyNumber).
+  Future<(String?, String?)> requestPhoneCode(String phone) async {
+    await _wait(500);
+    final a = account;
+    final p = normalPhone(phone);
+    if (a == null) return ('Your session has expired. Please sign in again.', null);
+    if (p.isEmpty) return ('Enter a valid Nigerian phone number.', null);
+    if (_users.values.any((u) => u.email != a.email && u.phone != null && normalPhone(u.phone!) == p)) return ('Another account already uses this number.', null);
+    final code = _issueCode('verify:$p', a.email);
+    _msg.send(channel: 'sms', kind: 'code', to: prettyPhone(p), subject: 'Verify your number', body: '$code is your MyFlix verification code.');
+    return (null, prettyPhone(p));
+  }
+
+  Future<String?> confirmPhone(String phone, String code) async {
+    await _wait(400);
+    final p = normalPhone(phone);
+    final err = _checkCode('verify:$p', code, (_) {});
+    if (err != null) return err;
+    account?.phone = p;
+    await _persist();
+    return null;
+  }
 
   Future<void> choosePlan(String planId) async {
     await _wait(300);
@@ -125,6 +244,7 @@ class AuthStore extends ChangeNotifier {
     if (a == null) return;
     final now = DateTime.now();
     final renews = DateTime(now.year, now.month + (annual ? 12 : 1) + freeMonths, now.day);
+    _msg.send(channel: 'email', kind: 'receipt', to: a.email, subject: 'Your MyFlix receipt', body: 'Thanks for your payment of ₦${amount ?? Catalog.plan(a.planId)?.price ?? 0}. Your membership is active.');
     a.billingCycle = annual ? 'annual' : 'monthly';
     a.promoLabel = promoLabel;
     a.payment = Payment(method: method, last4: last4, paidAt: now.toIso8601String(), renewsAt: renews.toIso8601String());
@@ -213,6 +333,7 @@ class AuthStore extends ChangeNotifier {
     if (a == null) return 'Your session has expired. Please sign in again.';
     if (a.passwordHash != _hash(current)) return 'Your current password is incorrect.';
     a.passwordHash = _hash(next);
+    _msg.send(channel: 'email', kind: 'security', to: a.email, subject: 'Your MyFlix password was changed', body: 'Your password was changed from Account settings. If this wasn\'t you, reset it now.');
     await _persist();
     return null;
   }

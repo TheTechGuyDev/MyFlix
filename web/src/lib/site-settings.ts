@@ -11,6 +11,10 @@ export type SiteSettings = {
   announcement: string;
   downloadsEnabled: boolean;
   maxProfiles: number;
+  watermarkEnabled: boolean;
+  drmEnabled: boolean;
+  screenshotBlock: boolean;
+  streamLimitEnforced: boolean;
 };
 
 const defaults: SiteSettings = {
@@ -23,6 +27,10 @@ const defaults: SiteSettings = {
   announcement: "",
   downloadsEnabled: true,
   maxProfiles: 5,
+  watermarkEnabled: true,
+  drmEnabled: true,
+  screenshotBlock: true,
+  streamLimitEnforced: true,
 };
 
 export function siteSettings(): SiteSettings {

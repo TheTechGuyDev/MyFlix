@@ -9,6 +9,7 @@ import '../../data/models.dart';
 import '../../theme.dart';
 import '../../widgets/common.dart';
 import '../../widgets/titles.dart';
+import '../../i18n.dart';
 
 const genres = ['Nollywood', 'Drama', 'Comedy', 'Thriller', 'Crime', 'Romance', 'Action', 'Horror', 'Family', 'Kids', 'Documentary', 'Mystery', 'Adventure', 'Business'];
 
@@ -150,7 +151,7 @@ class _HomeScreenState extends State<HomeScreen> {
                                       ),
                                     ],
                                   )
-                                : Text('For ${p.name}', style: const TextStyle(fontSize: 22, fontWeight: FontWeight.w800))
+                                : Text(context.tr('For {0}', p.name), style: const TextStyle(fontSize: 22, fontWeight: FontWeight.w800))
                           else
                             IconButton(onPressed: () => setState(() => _filter = 'all'), icon: const Icon(Icons.close)),
                           const Spacer(),
@@ -166,9 +167,9 @@ class _HomeScreenState extends State<HomeScreen> {
                         scrollDirection: Axis.horizontal,
                         padding: const EdgeInsets.symmetric(horizontal: 14),
                         children: [
-                          if (_filter != 'movies') _Chip(label: 'Series', on: _filter == 'series', onTap: () => setState(() => _filter = _filter == 'series' ? 'all' : 'series')),
-                          if (_filter != 'series') _Chip(label: 'Movies', on: _filter == 'movies', onTap: () => setState(() => _filter = _filter == 'movies' ? 'all' : 'movies')),
-                          _Chip(label: 'Categories', trailing: Icons.keyboard_arrow_down, onTap: _categories),
+                          if (_filter != 'movies') _Chip(label: context.tr('Series'), on: _filter == 'series', onTap: () => setState(() => _filter = _filter == 'series' ? 'all' : 'series')),
+                          if (_filter != 'series') _Chip(label: context.tr('Movies'), on: _filter == 'movies', onTap: () => setState(() => _filter = _filter == 'movies' ? 'all' : 'movies')),
+                          _Chip(label: context.tr('Categories'), trailing: Icons.keyboard_arrow_down, onTap: _categories),
                         ],
                       ),
                     ),
@@ -280,7 +281,7 @@ class _Hero extends StatelessWidget {
                               child: FilledButton.icon(
                                 onPressed: () => playTitle(context, t),
                                 icon: const Icon(Icons.play_arrow, size: 26),
-                                label: const Text('Play', style: TextStyle(fontWeight: FontWeight.w700, fontSize: 16)),
+                                label: Text(context.tr('Play'), style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 16)),
                                 style: FilledButton.styleFrom(
                                   backgroundColor: Colors.white,
                                   foregroundColor: AppColors.ink,
@@ -294,7 +295,7 @@ class _Hero extends StatelessWidget {
                               child: FilledButton.icon(
                                 onPressed: () => lib.toggleList(t.id),
                                 icon: Icon(inList ? Icons.check : Icons.add, size: 24),
-                                label: const Text('My List', style: TextStyle(fontWeight: FontWeight.w700, fontSize: 16)),
+                                label: Text(context.tr('My List'), style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 16)),
                                 style: FilledButton.styleFrom(
                                   backgroundColor: Colors.white24,
                                   foregroundColor: Colors.white,

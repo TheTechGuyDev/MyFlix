@@ -8,6 +8,7 @@ import '../../data/models.dart';
 import '../../theme.dart';
 import '../../widgets/common.dart';
 import '../../widgets/titles.dart';
+import '../../i18n.dart';
 
 /* ======================= Search ======================= */
 class SearchScreen extends StatefulWidget {
@@ -120,7 +121,7 @@ class _NewHotScreenState extends State<NewHotScreen> {
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('New & Hot', style: TextStyle(fontSize: 22, fontWeight: FontWeight.w800)),
+        title: Text(context.tr('New & Hot'), style: const TextStyle(fontSize: 22, fontWeight: FontWeight.w800)),
         actions: [
           IconButton(onPressed: () => context.push('/downloads'), icon: const Icon(Icons.download_outlined)),
           IconButton(onPressed: () => context.push('/search'), icon: const Icon(Icons.search)),
@@ -193,7 +194,7 @@ class _NewHotScreenState extends State<NewHotScreen> {
                             if (isComing) ...[
                               _MiniAction(
                                 icon: lib.reminders.contains(t.id) ? Icons.notifications_active : Icons.notifications_none,
-                                label: lib.reminders.contains(t.id) ? 'Reminder set' : 'Remind Me',
+                                label: context.tr(lib.reminders.contains(t.id) ? 'Reminder set' : 'Remind Me'),
                                 onTap: () {
                                   lib.toggleReminder(t.id);
                                   toast(context, lib.reminders.contains(t.id) ? "We'll notify you when ${t.title} arrives." : 'Reminder removed.');
@@ -201,8 +202,8 @@ class _NewHotScreenState extends State<NewHotScreen> {
                               ),
                               _MiniAction(icon: Icons.info_outline, label: 'Info', onTap: () => openTitle(context, t)),
                             ] else ...[
-                              _MiniAction(icon: Icons.play_arrow, label: 'Play', onTap: () => playTitle(context, t)),
-                              _MiniAction(icon: lib.inList(t.id) ? Icons.check : Icons.add, label: 'My List', onTap: () => lib.toggleList(t.id)),
+                              _MiniAction(icon: Icons.play_arrow, label: context.tr('Play'), onTap: () => playTitle(context, t)),
+                              _MiniAction(icon: lib.inList(t.id) ? Icons.check : Icons.add, label: context.tr('My List'), onTap: () => lib.toggleList(t.id)),
                             ],
                           ]),
                           if (isComing) Text('Coming ${t.comingSoon}', style: const TextStyle(color: AppColors.muted, fontSize: 13)),
@@ -245,7 +246,7 @@ class MyListScreen extends StatelessWidget {
     final lib = context.watch<LibraryStore>();
     final items = lib.list.map(Catalog.byId).whereType<MediaTitle>().where((t) => Catalog.allowed(t, p.settings.maturity) && (!p.kids || t.kids)).toList();
     return Scaffold(
-      appBar: AppBar(title: const Text('My List', style: TextStyle(fontWeight: FontWeight.w800))),
+      appBar: AppBar(title: Text(context.tr('My List'), style: const TextStyle(fontWeight: FontWeight.w800))),
       body: items.isEmpty
           ? _Empty(icon: Icons.add_circle_outline, title: 'Your list is empty', body: 'Tap + My List on any title to save it here.', action: 'Browse titles', onAction: () => context.go('/home'))
           : GridView.builder(
@@ -299,7 +300,7 @@ class DownloadsScreen extends StatelessWidget {
     }
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Downloads', style: TextStyle(fontWeight: FontWeight.w800)),
+        title: Text(context.tr('Downloads'), style: const TextStyle(fontWeight: FontWeight.w800)),
         actions: [IconButton(onPressed: () => context.push('/app-settings'), icon: const Icon(Icons.settings_outlined))],
       ),
       body: Column(children: [

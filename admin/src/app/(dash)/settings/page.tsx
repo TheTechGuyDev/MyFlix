@@ -76,7 +76,9 @@ export default function SettingsPage() {
           </div>
           <Toggle label="Data Saver on by default" sub="New profiles start on Save Data" on={cur.dataSaverDefault} onChange={(v) => set({ dataSaverDefault: v })} />
           <Toggle label="DRM protection" sub="Widevine / FairPlay licences (backend)" on={cur.drmEnabled} onChange={(v) => set({ drmEnabled: v })} />
-          <Toggle label="Forensic watermark" sub="Invisible member ID in the stream to trace leaks" on={cur.watermarkEnabled} onChange={(v) => set({ watermarkEnabled: v })} />
+          <Toggle label="Forensic watermark" sub="Faint, moving member ID over the video to trace leaks" on={cur.watermarkEnabled} onChange={(v) => set({ watermarkEnabled: v })} />
+          <Toggle label="Block screenshots & screen recording" sub="Android app shows a black screen in screenshots and recordings" on={cur.screenshotBlock} onChange={(v) => set({ screenshotBlock: v })} />
+          <Toggle label="Enforce screen limits" sub="Stop extra streams beyond each plan's screens (Live Now shows who is watching)" on={cur.streamLimitEnforced} onChange={(v) => set({ streamLimitEnforced: v })} />
         </Card>
         <Card className="xl:col-span-2">
           <CardTitle title="Data" sub={store.quota ? `This browser is using ${(store.used / 1024 ** 2).toFixed(1)} MB of ${(store.quota / 1024 ** 3).toFixed(1)} GB for uploads and data` : undefined} />

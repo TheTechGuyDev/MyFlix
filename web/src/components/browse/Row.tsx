@@ -1,5 +1,6 @@
 "use client";
 
+import { useT } from "@/lib/i18n";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { RowDef, Title } from "@/lib/catalog";
 import type { LibraryApi } from "@/lib/library";
@@ -9,6 +10,7 @@ import { ChevronLeft, ChevronRight } from "./icons";
 type Props = { row: RowDef; library: LibraryApi; onOpen: (t: Title) => void; onPlay: (t: Title) => void };
 
 export default function Row({ row, library, onOpen, onPlay }: Props) {
+  const tx = useT();
   const ref = useRef<HTMLDivElement>(null);
   const [left, setLeft] = useState(false);
   const [right, setRight] = useState(false);
@@ -30,7 +32,7 @@ export default function Row({ row, library, onOpen, onPlay }: Props) {
 
   return (
     <section className="group/row relative" aria-label={row.title}>
-      <h2 className="mb-2 px-4 text-lg font-bold sm:px-10 sm:text-xl lg:px-14">{row.title}</h2>
+      <h2 className="mb-2 px-4 text-lg font-bold sm:px-10 sm:text-xl lg:px-14">{tx(row.title)}</h2>
       <div className="relative">
         {left && (
           <button onClick={() => go(-1)} aria-label="Previous" className="absolute bottom-28 left-0 top-3 z-20 hidden w-10 items-center justify-center bg-black/60 opacity-0 transition hover:bg-black/80 group-hover/row:opacity-100 sm:flex lg:w-14">

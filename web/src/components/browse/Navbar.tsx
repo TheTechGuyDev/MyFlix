@@ -9,6 +9,7 @@ import type { Profile } from "@/lib/mock-auth";
 import { byId, img, type Tab } from "@/lib/catalog";
 import { BellIcon, ChevronDown, CloseIcon, SearchIcon } from "./icons";
 import { campaignNotices } from "@/lib/extras";
+import { useT } from "@/lib/i18n";
 
 const tabs: { id: Tab; label: string }[] = [
   { id: "home", label: "Home" },
@@ -48,6 +49,7 @@ function useClickAway(open: boolean, close: () => void) {
 }
 
 export default function Navbar({ tab, onTab, query, onQuery, profile, profiles, onSwitch, onSignOut, onOpenTitle }: Props) {
+  const tx = useT();
   const [solid, setSolid] = useState(false);
   const [searchOpen, setSearchOpen] = useState(Boolean(query));
   const [menu, setMenu] = useState<null | "browse" | "bell" | "profile">(null);
@@ -92,26 +94,36 @@ export default function Navbar({ tab, onTab, query, onQuery, profile, profiles, 
                 onClick={() => onTab(t.id)}
                 className={`transition ${tab === t.id && !query ? "font-semibold text-white" : "text-white/80 hover:text-white/60"}`}
               >
-                {t.label}
+                {tx(t.label)}
               </button>
             </li>
           ))}
+          {!profile.kids && (
+            <li>
+              <Link href="/clips" className="text-white/80 transition hover:text-white/60">{tx("Clips")}</Link>
+            </li>
+          )}
         </ul>
 
         {/* Mobile browse menu */}
         <div ref={browseRef} className="relative ml-1 lg:hidden">
           <button onClick={() => setMenu(menu === "browse" ? null : "browse")} className="flex items-center gap-1 text-sm font-semibold">
-            Browse <ChevronDown className="h-4 w-4" />
+            {tx("Browse")} <ChevronDown className="h-4 w-4" />
           </button>
           {menu === "browse" && (
             <ul className="absolute left-0 top-9 w-48 border-t-2 border-white bg-black/95 py-2 text-sm">
               {visibleTabs.map((t) => (
                 <li key={t.id}>
                   <button onClick={() => { onTab(t.id); close(); }} className={`block w-full px-4 py-2.5 text-left hover:bg-white/10 ${tab === t.id ? "font-semibold" : "text-white/70"}`}>
-                    {t.label}
+                    {tx(t.label)}
                   </button>
                 </li>
               ))}
+              {!profile.kids && (
+                <li>
+                  <Link href="/clips" className="block w-full px-4 py-2.5 text-left text-white/70 hover:bg-white/10">{tx("Clips")}</Link>
+                </li>
+              )}
             </ul>
           )}
         </div>
@@ -188,12 +200,12 @@ export default function Navbar({ tab, onTab, query, onQuery, profile, profiles, 
                       </button>
                     </li>
                   ))}
-                  <li><Link href="/profiles" className="block px-4 py-2 hover:underline">Manage Profiles</Link></li>
-                  <li><Link href="/account" className="block px-4 py-2 hover:underline">Account</Link></li>
-                  <li><Link href="/help" className="block px-4 py-2 hover:underline">Help Centre</Link></li>
+                  <li><Link href="/profiles" className="block px-4 py-2 hover:underline">{tx("Manage Profiles")}</Link></li>
+                  <li><Link href="/account" className="block px-4 py-2 hover:underline">{tx("Account")}</Link></li>
+                  <li><Link href="/help" className="block px-4 py-2 hover:underline">{tx("Help Centre")}</Link></li>
                 </ul>
                 <button onClick={onSignOut} className="block w-full border-t border-white/20 px-4 py-3 text-center hover:underline">
-                  Sign out of MyFlix
+                  {tx("Sign out of MyFlix")}
                 </button>
               </div>
             )}

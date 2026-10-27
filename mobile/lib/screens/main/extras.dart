@@ -7,6 +7,7 @@ import 'package:url_launcher/url_launcher.dart';
 import '../../data/auth_store.dart';
 import '../../data/catalog.dart';
 import '../../data/library_store.dart';
+import '../../data/tv_link.dart';
 import '../../theme.dart';
 import '../../widgets/common.dart';
 import 'account.dart' show fmtDate;
@@ -198,7 +199,7 @@ class _TvSignInScreenState extends State<TvSignInScreen> {
         Text(_done ? 'Your TV is signed in' : 'Enter the code on your TV', textAlign: TextAlign.center, style: const TextStyle(fontSize: 22, fontWeight: FontWeight.w800)),
         const SizedBox(height: 8),
         Text(
-          _done ? 'Grab the remote and enjoy. The TV now appears under Account, Devices.' : 'Open MyFlix on your Smart TV, choose Sign in with phone, and type the 8-digit code shown on screen.',
+          _done ? 'Grab the remote and enjoy. The TV now appears under Account, Devices.' : 'Open MyFlix on your Smart TV (or the TV\'s web browser at thetechguydev.github.io/MyFlix/tv), and type the 8-digit code shown on screen.',
           textAlign: TextAlign.center,
           style: const TextStyle(color: Colors.white70, height: 1.4),
         ),
@@ -214,7 +215,8 @@ class _TvSignInScreenState extends State<TvSignInScreen> {
           ),
           const SizedBox(height: 16),
           PrimaryButton('Sign in TV', onPressed: () {
-            if (!RegExp(r'^\d{8}$').hasMatch(_code.text)) return setState(() => _err = 'Enter the 8 digits shown on your TV.');
+            final err = TvLink.approve(_code.text, context.read<AuthStore>().account!.email);
+            if (err != null) return setState(() => _err = err);
             setState(() {
               _err = null;
               _done = true;

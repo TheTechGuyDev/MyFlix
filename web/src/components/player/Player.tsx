@@ -3,11 +3,14 @@
 import Hls, { type Level } from "hls.js";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { episodesFor, type Title } from "@/lib/catalog";
+import { episodesFor, img, type Title } from "@/lib/catalog";
 import { readProgress, writeProgress } from "@/lib/library";
 import { PLAN_MAX_HEIGHT } from "@/lib/streams";
 import { addUsage, logActivity, thisMonth, watchedTodayMinutes } from "@/lib/extras";
 import { Spinner } from "@/components/auth/ui";
+import { claim, deviceName, release, stopStream, type LiveStream } from "@/lib/live";
+import { siteSettings } from "@/lib/site-settings";
+import { useT } from "@/lib/i18n";
 
 type Props = {
   title: Title;
@@ -20,10 +23,16 @@ type Props = {
   planId: string;
   prefs: { autoplayNext: boolean; dataUsage: "auto" | "saver" | "hd" | "4k"; subtitleSize: "small" | "medium" | "large"; subtitleBg: "none" | "shadow" | "box"; dailyLimitMinutes?: number; monthlyDataCapGB?: number };
   startAt?: number;
+  email: string;
+  profileName: string;
+  /** Smart TV app: handle exit / episode changes in-page instead of routing. */
+  onExit?: () => void;
+  onEpisode?: (season: number, episode: number) => void;
 };
 
 type Track = { id: number; label: string };
-type Panel = null | "episodes" | "audio" | "speed" | "quality" | "sleep";
+type Panel = null | "episodes" | "audio" | "speed" | "quality" | "sleep" | "cast";
+const CAST_DEVICES = ["Living Room TV", "Bedroom Chromecast", "Samsung Smart TV (MyFlix app)"];
 
 const SPEEDS = [0.5, 0.75, 1, 1.25, 1.5];
 const fmt = (s: number) => {
@@ -35,8 +44,9 @@ const fmt = (s: number) => {
 };
 const qualityLabel = (h: number) => (h >= 2160 ? "4K" : h >= 1440 ? "1440p" : `${h}p`);
 
-export default function Player({ title, sources, extraSubs = [], intro, season, episode, profileId, planId, prefs, startAt }: Props) {
+export default function Player({ title, sources, extraSubs = [], intro, season, episode, profileId, planId, prefs, startAt, email, profileName, onExit, onEpisode }: Props) {
   const router = useRouter();
+  const tx = useT();
   const wrapRef = useRef<HTMLDivElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const hlsRef = useRef<Hls | null>(null);
@@ -81,11 +91,83 @@ export default function Player({ title, sources, extraSubs = [], intro, season, 
   const [hover, setHover] = useState<{ x: number; t: number } | null>(null);
   const [flash, setFlash] = useState<string | null>(null);
   const [sleepAt, setSleepAt] = useState<number | "end" | null>(null);
-  const [blocked, setBlocked] = useState<null | "sleep" | "limit" | "still">(null);
+  const [blocked, setBlocked] = useState<null | "sleep" | "limit" | "still" | "screens" | "stopped">(null);
+  const [streamId] = useState(() => Math.random().toString(36).slice(2, 10));
+  const [others, setOthers] = useState<LiveStream[]>([]);
+  const [screenLimit, setScreenLimit] = useState(1);
+  const [castTo, setCastTo] = useState<string | null>(null);
+  const [wmPos, setWmPos] = useState(0);
+  const protect = useMemo(() => siteSettings(), []);
   const [notice, setNotice] = useState("");
   const lastTick = useRef<number | null>(null);
   const logged = useRef(false);
   const capWarned = useRef(false);
+
+  /* ---------------- Concurrent streams ---------------- */
+  const claimStream = useCallback(() => {
+    const r = claim({ id: streamId, email, profile: profileName, device: deviceName(), titleId: title.id, title: title.title }, planId);
+    if (r.ok) return true;
+    videoRef.current?.pause();
+    if (r.limit === -1) setBlocked("stopped");
+    else {
+      setOthers(r.others);
+      setScreenLimit(r.limit);
+      setBlocked("screens");
+    }
+    return false;
+  }, [streamId, email, profileName, title.id, title.title, planId]);
+
+  useEffect(() => {
+    if (!playing) return;
+    if (!claimStream()) return;
+    const id = setInterval(claimStream, 10000);
+    return () => clearInterval(id);
+  }, [playing, claimStream]);
+
+  useEffect(() => () => release(streamId), [streamId]);
+
+  // Forensic-style visible watermark moves around so it can't be cropped out
+  useEffect(() => {
+    if (!protect.watermarkEnabled) return;
+    const id = setInterval(() => setWmPos((p) => (p + 1) % 4), 20000);
+    return () => clearInterval(id);
+  }, [protect.watermarkEnabled]);
+
+  /* ---------------- Casting ---------------- */
+  const startCast = async () => {
+    const v = videoRef.current as (HTMLVideoElement & { webkitShowPlaybackTargetPicker?: () => void }) | null;
+    if (!v) return;
+    try {
+      if (v.webkitShowPlaybackTargetPicker) return v.webkitShowPlaybackTargetPicker(); // AirPlay (Safari)
+      if (v.remote && !hlsRef.current) {
+        await v.remote.prompt(); // Chromecast / Remote Playback API
+        return;
+      }
+    } catch {
+      /* fall through to the device list */
+    }
+    setPanel(panel === "cast" ? null : "cast");
+  };
+
+  useEffect(() => {
+    const v = videoRef.current;
+    const r = v?.remote;
+    if (!r) return;
+    const on = () => setCastTo(r.state === "connected" ? "your TV" : null);
+    r.addEventListener("connect", on);
+    r.addEventListener("disconnect", on);
+    return () => {
+      r.removeEventListener("connect", on);
+      r.removeEventListener("disconnect", on);
+    };
+  }, []);
+
+  // Demo casting: the TV plays the sound, so mute this screen while connected
+  useEffect(() => {
+    const v = videoRef.current;
+    if (v && castTo && castTo !== "your TV") v.muted = true;
+    else if (v && !castTo) v.muted = false;
+  }, [castTo]);
 
   /* ---------------- Progress ---------------- */
   const save = useCallback(
@@ -275,15 +357,17 @@ export default function Player({ title, sources, extraSubs = [], intro, season, 
   const goEpisode = useCallback(
     (s: number, e: number) => {
       save(true);
-      router.replace(`/watch?id=${title.id}&s=${s}&e=${e}`);
+      if (onEpisode) onEpisode(s, e);
+      else router.replace(`/watch?id=${title.id}&s=${s}&e=${e}`);
     },
-    [router, save, title.id],
+    [router, save, title.id, onEpisode],
   );
 
   const exit = () => {
     save(true);
     if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
-    router.push("/browse");
+    if (onExit) onExit();
+    else router.push("/browse");
   };
 
   const chooseQuality = (q: number | "auto" | "saver") => {
@@ -457,6 +541,7 @@ export default function Player({ title, sources, extraSubs = [], intro, season, 
       ref={wrapRef}
       onMouseMove={poke}
       onTouchStart={poke}
+      onContextMenu={(e) => e.preventDefault()}
       className={`fixed inset-0 z-50 select-none bg-black text-white ${showUi ? "" : "cursor-none"}`}
     >
       <style>{`video::cue{font-size:${prefs.subtitleSize === "small" ? "clamp(13px,1.8vw,22px)" : prefs.subtitleSize === "large" ? "clamp(20px,3.2vw,44px)" : "clamp(16px,2.4vw,32px)"};background:${prefs.subtitleBg === "box" ? "rgba(0,0,0,.8)" : "transparent"};text-shadow:${prefs.subtitleBg === "shadow" ? "0 0 4px #000,0 0 4px #000" : "none"}}`}</style>
@@ -465,6 +550,8 @@ export default function Player({ title, sources, extraSubs = [], intro, season, 
         className="h-full w-full"
         playsInline
         crossOrigin="anonymous"
+        controlsList="nodownload"
+        onContextMenu={(e) => e.preventDefault()}
         onClick={togglePlay}
         onDoubleClick={toggleFs}
         onPlay={() => {
@@ -528,6 +615,27 @@ export default function Player({ title, sources, extraSubs = [], intro, season, 
         ))}
       </video>
 
+      {/* Visible watermark (Admin > Settings > Forensic watermark) */}
+      {protect.watermarkEnabled && (
+        <span
+          aria-hidden
+          className={`pointer-events-none absolute z-10 font-mono text-xs text-white/15 transition-all duration-1000 sm:text-sm ${["left-[8%] top-[18%]", "right-[8%] top-[30%]", "left-[12%] bottom-[30%]", "right-[12%] bottom-[22%]"][wmPos]}`}
+        >
+          {email.split("@")[0]} · {streamId}
+        </span>
+      )}
+
+      {/* Casting */}
+      {castTo && (
+        <div className="absolute inset-0 z-[5] flex flex-col items-center justify-center gap-3 bg-cover bg-center text-center" style={{ backgroundImage: `linear-gradient(rgba(0,0,0,.75),rgba(0,0,0,.9)),url(${img(title.backdrop ?? title.image, 1280, 720)})` }}>
+          <IcCast className="h-14 w-14 text-brand-bright" />
+          <p className="text-sm uppercase tracking-widest text-white/60">Playing on</p>
+          <p className="text-2xl font-bold">{castTo}</p>
+          <p className="text-white/70">{title.title}{label ? ` · ${label}` : ""}</p>
+          <button onClick={() => { setCastTo(null); setNotice("Stopped casting. Playing here."); }} className="mt-2 rounded border border-white/60 px-5 py-2 text-sm font-semibold hover:bg-white hover:text-ink">Stop casting</button>
+        </div>
+      )}
+
       {/* Buffering */}
       {buffering && !error && (
         <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
@@ -550,7 +658,7 @@ export default function Player({ title, sources, extraSubs = [], intro, season, 
           <p className="max-w-md text-lg">{error}</p>
           <div className="flex gap-3">
             <button onClick={() => { setError(""); setSrcIdx(0); }} className="rounded bg-white px-6 py-2 font-semibold text-ink">Try Again</button>
-            <button onClick={exit} className="rounded border border-white/60 px-6 py-2">Back to Browse</button>
+            <button onClick={exit} className="rounded border border-white/60 px-6 py-2">{tx("Back to Browse")}</button>
           </div>
         </div>
       )}
@@ -562,10 +670,28 @@ export default function Player({ title, sources, extraSubs = [], intro, season, 
       {blocked && (
         <div className="absolute inset-0 z-30 flex flex-col items-center justify-center gap-4 bg-black/85 px-6 text-center">
           <p className="text-2xl font-bold">
-            {blocked === "sleep" ? "Sleep timer ended" : blocked === "limit" ? "That's all for today" : `Are you still watching ${title.title}?`}
+            {blocked === "sleep" ? "Sleep timer ended" : blocked === "limit" ? "That's all for today" : blocked === "screens" ? "Too many people are using your account right now" : blocked === "stopped" ? "Playback stopped" : `Are you still watching ${title.title}?`}
           </p>
-          <p className="max-w-md text-white/70">
-            {blocked === "sleep"
+          {blocked === "screens" && (
+            <div className="w-full max-w-md text-left">
+              <p className="mb-3 text-center text-white/70">Your plan allows {screenLimit} screen{screenLimit > 1 ? "s" : ""} at a time. Stop one of these streams to watch here, or upgrade your plan.</p>
+              <ul className="divide-y divide-white/10 rounded-md bg-white/5">
+                {others.map((o) => (
+                  <li key={o.id} className="flex items-center gap-3 px-4 py-3">
+                    <span className="flex-1">
+                      <span className="block font-semibold">{o.profile} on {o.device}</span>
+                      <span className="block text-sm text-white/60">Watching {o.title}</span>
+                    </span>
+                    <button onClick={() => { stopStream(o.id, "member"); setOthers((l) => l.filter((x) => x.id !== o.id)); }} className="rounded bg-white/15 px-3 py-1.5 text-sm font-semibold hover:bg-white/25">Stop</button>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+          <p className={`max-w-md text-white/70 ${blocked === "screens" ? "hidden" : ""}`}>
+            {blocked === "stopped"
+              ? "Someone on your account, or MyFlix support, stopped this stream. You can start watching again if a screen is free."
+              : blocked === "sleep"
               ? "Good night! We've paused so you don't miss anything."
               : blocked === "limit"
                 ? `This profile has a ${prefs.dailyLimitMinutes}-minute daily viewing limit. A parent can change it in Account, Profiles.`
@@ -573,12 +699,18 @@ export default function Player({ title, sources, extraSubs = [], intro, season, 
           </p>
           <div className="flex gap-3">
             {blocked === "still" && nextEp && (
-              <button onClick={() => { try { sessionStorage.setItem("myflix.autoplayChain", "0"); } catch {} setBlocked(null); goEpisode(nextEp.season, nextEp.episode); }} className="rounded bg-white px-6 py-2 font-semibold text-ink">Continue Watching</button>
+              <button onClick={() => { try { sessionStorage.setItem("myflix.autoplayChain", "0"); } catch {} setBlocked(null); goEpisode(nextEp.season, nextEp.episode); }} className="rounded bg-white px-6 py-2 font-semibold text-ink">{tx("Continue Watching")}</button>
             )}
             {blocked === "sleep" && (
               <button onClick={() => { setBlocked(null); videoRef.current?.play(); }} className="rounded bg-white px-6 py-2 font-semibold text-ink">Keep Watching</button>
             )}
-            <button onClick={exit} className="rounded border border-white/60 px-6 py-2">Back to Browse</button>
+            {(blocked === "screens" || blocked === "stopped") && (
+              <button onClick={() => { if (blocked === "stopped") { release(streamId); location.reload(); return; } setBlocked(null); if (claimStream()) videoRef.current?.play(); }} className="rounded bg-white px-6 py-2 font-semibold text-ink">Try Again</button>
+            )}
+            {blocked === "screens" && (
+              <button onClick={() => router.push("/account/plan")} className="rounded border border-white/60 px-6 py-2">Upgrade Plan</button>
+            )}
+            <button onClick={exit} className="rounded border border-white/60 px-6 py-2">{tx("Back to Browse")}</button>
           </div>
         </div>
       )}
@@ -601,19 +733,19 @@ export default function Player({ title, sources, extraSubs = [], intro, season, 
           }}
           className="absolute bottom-32 right-6 rounded border-2 border-white/80 bg-black/60 px-6 py-2.5 text-lg font-semibold hover:bg-white hover:text-ink sm:right-12"
         >
-          Skip Intro
+          {tx("Skip Intro")}
         </button>
       )}
 
       {/* Next episode card */}
       {showNextCard && nextEp && (
         <div className="absolute bottom-32 right-6 w-72 rounded-md bg-ink-2/95 p-4 shadow-2xl sm:right-12">
-          <p className="text-xs uppercase tracking-widest text-white/60">Next Episode</p>
+          <p className="text-xs uppercase tracking-widest text-white/60">{tx("Next Episode")}</p>
           <p className="mt-1 font-semibold">
             S{nextEp.season}:E{nextEp.episode} {nextEp.season === season ? episodes.find((x) => x.number === nextEp.episode)?.title : "Pilot"}
           </p>
           <button onClick={() => goEpisode(nextEp.season, nextEp.episode)} className="mt-3 flex w-full items-center justify-center gap-2 rounded bg-white py-2 font-bold text-ink hover:bg-white/80">
-            <IcPlay className="h-5 w-5" /> {ended && prefs.autoplayNext ? `Playing in ${countdown}s` : "Next Episode"}
+            <IcPlay className="h-5 w-5" /> {ended && prefs.autoplayNext ? `Playing in ${countdown}s` : tx("Next Episode")}
           </button>
         </div>
       )}
@@ -623,8 +755,8 @@ export default function Player({ title, sources, extraSubs = [], intro, season, 
         <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 bg-black/70 text-center">
           <p className="font-display text-5xl">{title.title}</p>
           <div className="flex gap-3">
-            <button onClick={() => { if (videoRef.current) { videoRef.current.currentTime = 0; videoRef.current.play(); } }} className="rounded bg-white px-6 py-2 font-semibold text-ink">Watch Again</button>
-            <button onClick={exit} className="rounded border border-white/60 px-6 py-2">Back to Browse</button>
+            <button onClick={() => { if (videoRef.current) { videoRef.current.currentTime = 0; videoRef.current.play(); } }} className="rounded bg-white px-6 py-2 font-semibold text-ink">{tx("Watch Again")}</button>
+            <button onClick={exit} className="rounded border border-white/60 px-6 py-2">{tx("Back to Browse")}</button>
           </div>
         </div>
       )}
@@ -689,6 +821,7 @@ export default function Player({ title, sources, extraSubs = [], intro, season, 
           <CtrlBtn label="Audio and subtitles" active={panel === "audio"} onClick={() => setPanel(panel === "audio" ? null : "audio")}><IcSubs /></CtrlBtn>
           <CtrlBtn label="Sleep timer" active={panel === "sleep" || sleepAt !== null} onClick={() => setPanel(panel === "sleep" ? null : "sleep")}><IcMoon /></CtrlBtn>
           <CtrlBtn label="Share this moment" onClick={shareMoment}><IcShare /></CtrlBtn>
+          <CtrlBtn label="Cast to TV" active={panel === "cast" || castTo !== null} onClick={startCast}><IcCast /></CtrlBtn>
           <CtrlBtn label="Playback speed" active={panel === "speed"} onClick={() => setPanel(panel === "speed" ? null : "speed")}><IcSpeed /></CtrlBtn>
           <CtrlBtn label="Video quality" active={panel === "quality"} onClick={() => setPanel(panel === "quality" ? null : "quality")}>
             <span className="rounded border border-current px-1 text-[11px] font-bold leading-4">{quality === "saver" ? "DS" : (actualHeight || 0) >= 2160 ? "4K" : "HD"}</span>
@@ -702,7 +835,7 @@ export default function Player({ title, sources, extraSubs = [], intro, season, 
         <div className="absolute bottom-24 right-4 max-h-[60vh] w-[min(92vw,420px)] overflow-y-auto rounded-md bg-ink-2/95 p-4 shadow-2xl sm:right-8" onMouseMove={(e) => e.stopPropagation()}>
           {panel === "episodes" && (
             <>
-              <p className="mb-3 text-lg font-bold">Season {season}</p>
+              <p className="mb-3 text-lg font-bold">{tx("Season {0}", season)}</p>
               <ol className="space-y-1">
                 {episodes.map((x) => (
                   <li key={x.number}>
@@ -726,13 +859,13 @@ export default function Player({ title, sources, extraSubs = [], intro, season, 
           {panel === "audio" && (
             <div className="grid grid-cols-2 gap-4">
               <div>
-                <p className="mb-2 font-bold">Audio</p>
+                <p className="mb-2 font-bold">{tx("Audio")}</p>
                 {audioTracks.length ? audioTracks.map((t) => (
                   <Opt key={t.id} on={audio === t.id} onClick={() => chooseAudio(t.id)}>{t.label}</Opt>
                 )) : <Opt on onClick={() => {}}>Original</Opt>}
               </div>
               <div>
-                <p className="mb-2 font-bold">Subtitles</p>
+                <p className="mb-2 font-bold">{tx("Subtitles")}</p>
                 <Opt on={sub === -1} onClick={() => chooseSub(-1)}>Off</Opt>
                 {[...subTracks, ...extraSubs.map((x, i) => ({ id: 1000 + i, label: x.label }))].map((t) => (
                   <Opt key={t.id} on={sub === t.id} onClick={() => chooseSub(t.id)}>{t.label}</Opt>
@@ -744,7 +877,7 @@ export default function Player({ title, sources, extraSubs = [], intro, season, 
 
           {panel === "sleep" && (
             <>
-              <p className="mb-1 font-bold">Sleep Timer</p>
+              <p className="mb-1 font-bold">{tx("Sleep Timer")}</p>
               <p className="mb-3 text-xs text-white/60">{sleepAt === null ? "Off" : sleepAt === "end" ? "Stops at the end of this episode" : `Stops at ${new Date(sleepAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`}</p>
               <Opt on={sleepAt === null} onClick={() => { setSleepAt(null); setPanel(null); }}>Off</Opt>
               {[15, 30, 45, 60].map((m) => (
@@ -754,9 +887,21 @@ export default function Player({ title, sources, extraSubs = [], intro, season, 
             </>
           )}
 
+          {panel === "cast" && (
+            <>
+              <p className="mb-1 font-bold">{tx("Cast to")}</p>
+              <p className="mb-3 text-xs text-white/60">Devices on your Wi-Fi network</p>
+              {castTo && <Opt on onClick={() => { setCastTo(null); setPanel(null); }}>Stop casting to {castTo}</Opt>}
+              {CAST_DEVICES.filter((d) => d !== castTo).map((d) => (
+                <Opt key={d} on={false} onClick={() => { setCastTo(d); setPanel(null); setNotice(`Connected to ${d}.`); }}>{d}</Opt>
+              ))}
+              <p className="mt-3 text-xs text-white/50">Don&apos;t see your TV? Make sure it&apos;s on the same Wi-Fi, or open MyFlix on the TV and use Sign in with phone.</p>
+            </>
+          )}
+
           {panel === "speed" && (
             <>
-              <p className="mb-4 font-bold">Playback Speed</p>
+              <p className="mb-4 font-bold">{tx("Playback Speed")}</p>
               <div className="flex items-center justify-between">
                 {SPEEDS.map((s) => (
                   <button key={s} onClick={() => chooseRate(s)} className="flex flex-col items-center gap-2 text-sm">
@@ -770,7 +915,7 @@ export default function Player({ title, sources, extraSubs = [], intro, season, 
 
           {panel === "quality" && (
             <>
-              <p className="mb-1 font-bold">Video Quality</p>
+              <p className="mb-1 font-bold">{tx("Video Quality")}</p>
               <p className="mb-3 text-xs text-white/60">Now: {qualityText}</p>
               <Opt on={quality === "auto"} onClick={() => chooseQuality("auto")}>Auto (recommended)</Opt>
               <Opt on={quality === "saver"} onClick={() => chooseQuality("saver")}>Data Saver (about 0.3 GB/hr)</Opt>
@@ -830,5 +975,6 @@ const IcSubs = ({ className = S }) => (<svg viewBox="0 0 24 24" className={class
 const IcSpeed = ({ className = S }) => (<svg viewBox="0 0 24 24" className={className} fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"><path d="M4.5 18a9 9 0 1 1 15 0" /><path d="m12 13 4-5" /><circle cx="12" cy="13" r="1.3" fill="currentColor" /></svg>);
 const IcMoon = ({ className = S }) => (<svg viewBox="0 0 24 24" className={className} fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round"><path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5z" /></svg>);
 const IcShare = ({ className = S }) => (<svg viewBox="0 0 24 24" className={className} fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><circle cx="18" cy="5" r="2.5" /><circle cx="6" cy="12" r="2.5" /><circle cx="18" cy="19" r="2.5" /><path d="m8.2 10.8 7.6-4.4M8.2 13.2l7.6 4.4" /></svg>);
+const IcCast = ({ className = S }) => (<svg viewBox="0 0 24 24" className={className} fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"><path d="M3 8V6a1 1 0 0 1 1-1h16a1 1 0 0 1 1 1v12a1 1 0 0 1-1 1h-6" /><path d="M3 12a7 7 0 0 1 7 7M3 15.5A3.5 3.5 0 0 1 6.5 19" /><circle cx="3.5" cy="18.5" r=".8" fill="currentColor" /></svg>);
 const IcFs = ({ className = S }) => (<svg viewBox="0 0 24 24" className={className} fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5" /></svg>);
 const IcFsExit = ({ className = S }) => (<svg viewBox="0 0 24 24" className={className} fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M9 4v5H4M15 4v5h5M9 20v-5H4M15 20v-5h5" /></svg>);

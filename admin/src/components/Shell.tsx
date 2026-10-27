@@ -1,7 +1,7 @@
 "use client";
 
 import {
-  BarChart3, Bell, CalendarDays, ChevronsLeft, ClipboardList, CreditCard, ExternalLink, Film, LayoutDashboard, LayoutGrid, LifeBuoy, LogOut, Megaphone, Menu, Moon, Search, Settings, ShieldCheck, Sun, Tags, UploadCloud, Users,
+  BarChart3, Bell, Radio, CalendarDays, ChevronsLeft, ClipboardList, CreditCard, ExternalLink, Film, LayoutDashboard, LayoutGrid, LifeBuoy, LogOut, Megaphone, Menu, Moon, Search, Settings, ShieldCheck, Sun, Tags, UploadCloud, Users,
 } from "lucide-react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
@@ -14,6 +14,7 @@ import { Avatar, Badge, ToastProvider, cx } from "./ui";
 export const NAV: { href: string; label: string; section: Section; icon: typeof Film; group: string }[] = [
   { href: "/", label: "Overview", section: "overview", icon: LayoutDashboard, group: "Main" },
   { href: "/analytics", label: "Analytics", section: "analytics", icon: BarChart3, group: "Main" },
+  { href: "/live", label: "Live Now", section: "analytics", icon: Radio, group: "Main" },
   { href: "/content", label: "Content Library", section: "content", icon: Film, group: "Content" },
   { href: "/uploads", label: "Uploads & Encoding", section: "uploads", icon: UploadCloud, group: "Content" },
   { href: "/curation", label: "Home Curation", section: "curation", icon: LayoutGrid, group: "Content" },

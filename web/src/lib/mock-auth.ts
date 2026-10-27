@@ -5,6 +5,7 @@
  * NOTE: demo only. Never store real card data here.
  */
 import type { PlanId } from "./plans";
+import { checkCode, consumeResetToken, isPhoneLike, issueCode, issueResetToken, normalPhone, prettyPhone, send } from "./messaging";
 
 export type PaymentMethod = "card" | "transfer" | "ussd";
 
@@ -149,6 +150,7 @@ export async function signUp(email: string, password: string): Promise<Result<Ac
   const acc: Account = { email: e, passwordHash: await hash(password), createdAt: new Date().toISOString(), profiles: [] };
   saveUser(acc);
   write(SESSION_KEY, e);
+  send({ channel: "email", kind: "welcome", to: e, subject: "Welcome to MyFlix", body: "Your account is ready. Pick a plan to start watching Nollywood hits, series and more." });
   return { ok: true, data: acc };
 }
 
@@ -172,10 +174,71 @@ export function signOut() {
   }
 }
 
-export async function requestPasswordReset(email: string): Promise<Result> {
+/** Finds an account by email or Nigerian phone number. */
+export function findAccount(identifier: string): Account | null {
+  const all = users();
+  if (isPhoneLike(identifier)) {
+    const p = normalPhone(identifier);
+    return Object.values(all).find((a) => a.phone && normalPhone(a.phone) === p) ?? null;
+  }
+  return all[normal(identifier)] ?? null;
+}
+
+/** Sends a reset link by email, or a code + link by SMS when a phone number is given. */
+export async function requestPasswordReset(identifier: string): Promise<Result<{ channel: "email" | "sms" }>> {
   await wait();
-  void email; // Real backend sends a reset email here.
-  return { ok: true, data: undefined };
+  const acc = findAccount(identifier);
+  const sms = isPhoneLike(identifier);
+  // Same response whether or not the account exists, so emails can't be discovered.
+  if (!acc) return { ok: true, data: { channel: sms ? "sms" : "email" } };
+  const token = issueResetToken(acc.email);
+  const link = `/login/reset?token=${token}`;
+  if (sms) {
+    send({ channel: "sms", kind: "reset", to: prettyPhone(normalPhone(identifier)), subject: "MyFlix password reset", body: `Reset your MyFlix password with this link. It expires in 1 hour.`, link });
+  } else {
+    send({ channel: "email", kind: "reset", to: acc.email, subject: "Reset your MyFlix password", body: "We got a request to reset your password. The link below works for 1 hour. If this wasn't you, you can ignore this email.", link });
+  }
+  return { ok: true, data: { channel: sms ? "sms" : "email" } };
+}
+
+export const resetTokenEmail = (token: string) => consumeResetToken(token, true);
+
+export async function resetPassword(token: string, password: string): Promise<Result<Account>> {
+  await wait();
+  const email = consumeResetToken(token);
+  if (!email) return { ok: false, error: "This reset link has expired or was already used. Request a new one." };
+  const acc = users()[email];
+  if (!acc) return { ok: false, error: "We couldn't find this account." };
+  const next = { ...acc, passwordHash: await hash(password) };
+  saveUser(next);
+  write(SESSION_KEY, email);
+  send({ channel: "email", kind: "security", to: email, subject: "Your MyFlix password was changed", body: "Your password was just reset. If you didn't do this, contact help@myflix.ng right away." });
+  return { ok: true, data: next };
+}
+
+/** "Use a sign-in code": 6-digit code by SMS (phone) or email. */
+export async function requestSignInCode(identifier: string): Promise<Result<{ to: string; channel: "email" | "sms" }>> {
+  await wait();
+  const acc = findAccount(identifier);
+  const sms = isPhoneLike(identifier);
+  if (!acc) return { ok: false, error: sms ? "No account uses this phone number. Add your number in Account, Security first." : "We can't find an account with this email address." };
+  if (acc.suspended) return { ok: false, error: "This account has been suspended. Contact MyFlix support to restore access." };
+  const key = sms ? normalPhone(identifier) : acc.email;
+  const code = issueCode(key, acc.email);
+  const to = sms ? prettyPhone(key) : acc.email;
+  send({ channel: sms ? "sms" : "email", kind: "code", to, subject: "Your MyFlix sign-in code", body: `${code} is your MyFlix sign-in code. It expires in 10 minutes. Never share it with anyone.` });
+  return { ok: true, data: { to, channel: sms ? "sms" : "email" } };
+}
+
+export async function verifySignInCode(identifier: string, code: string): Promise<Result<Account>> {
+  await wait(400);
+  const key = isPhoneLike(identifier) ? normalPhone(identifier) : normal(identifier);
+  const res = checkCode(key, code);
+  if (!res.ok) return res;
+  const acc = users()[res.email];
+  if (!acc) return { ok: false, error: "We couldn't find this account." };
+  write(SESSION_KEY, acc.email);
+  return { ok: true, data: acc };
 }
 
 function update(mutator: (acc: Account) => Account): Result<Account> {
@@ -193,6 +256,8 @@ export async function choosePlan(planId: PlanId) {
 
 export async function completePayment(method: PaymentMethod, last4?: string, opts: { annual?: boolean; amount?: number; freeMonths?: number; promo?: { code: string; label: string } } = {}) {
   await wait(1500);
+  const payer = getAccount();
+  if (payer) send({ channel: "email", kind: "receipt", to: payer.email, subject: "Your MyFlix receipt", body: `Thanks for your payment of ₦${(opts.amount ?? planPrice(payer.planId)).toLocaleString("en-NG")}. Your membership is active.`, link: "/account/billing" });
   const now = new Date();
   const renews = new Date(now);
   renews.setMonth(renews.getMonth() + (opts.annual ? 12 : 1) + (opts.freeMonths ?? 0));
@@ -288,12 +353,36 @@ export async function changePassword(current: string, nextPw: string): Promise<R
   if (!acc) return { ok: false, error: "Your session has expired. Please sign in again." };
   if (acc.passwordHash !== (await hash(current))) return { ok: false, error: "Your current password is incorrect." };
   const passwordHash = await hash(nextPw);
+  send({ channel: "email", kind: "security", to: acc.email, subject: "Your MyFlix password was changed", body: "Your password was changed from Account settings. If this wasn't you, reset it now." });
   return update((a) => ({ ...a, passwordHash }));
 }
 
 export async function updatePhone(phone: string) {
   await wait(500);
   return update((a) => ({ ...a, phone }));
+}
+
+/** Step 1 of adding a phone: text a 6-digit code to it. */
+export async function requestPhoneCode(phone: string): Promise<Result<string>> {
+  await wait(500);
+  const acc = getAccount();
+  const p = normalPhone(phone);
+  if (!acc) return { ok: false, error: "Your session has expired. Please sign in again." };
+  if (!p) return { ok: false, error: "Enter a valid Nigerian phone number." };
+  const other = Object.values(users()).find((a) => a.email !== acc.email && a.phone && normalPhone(a.phone) === p);
+  if (other) return { ok: false, error: "Another account already uses this number." };
+  const code = issueCode(`verify:${p}`, acc.email);
+  send({ channel: "sms", kind: "code", to: prettyPhone(p), subject: "Verify your number", body: `${code} is your MyFlix verification code.` });
+  return { ok: true, data: prettyPhone(p) };
+}
+
+/** Step 2: confirm the code and save the number. */
+export async function confirmPhone(phone: string, code: string): Promise<Result<Account>> {
+  await wait(400);
+  const p = normalPhone(phone);
+  const res = checkCode(`verify:${p}`, code);
+  if (!res.ok) return res;
+  return update((a) => ({ ...a, phone: p }));
 }
 
 export async function signOutAllDevices() {
@@ -309,7 +398,9 @@ export async function removeDevice(id: string) {
 
 export async function updateProfile(profile: Profile) {
   await wait(500);
-  return update((a) => ({ ...a, profiles: a.profiles.map((p) => (p.id === profile.id ? profile : p)) }));
+  const r = update((a) => ({ ...a, profiles: a.profiles.map((p) => (p.id === profile.id ? profile : p)) }));
+  window.dispatchEvent(new Event("myflix:lang")); // display language may have changed
+  return r;
 }
 
 export async function addCredit(amount: number) {
@@ -333,6 +424,7 @@ export async function saveProfiles(profiles: Profile[]) {
 
 export function setActiveProfile(id: string) {
   write(PROFILE_KEY, id);
+  if (typeof window !== "undefined") window.dispatchEvent(new Event("myflix:lang"));
 }
 
 export function getActiveProfileId(): string | null {

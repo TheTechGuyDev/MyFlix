@@ -5,6 +5,7 @@ import '../data/library_store.dart';
 import '../data/models.dart';
 import '../theme.dart';
 import 'common.dart';
+import '../i18n.dart';
 
 void openTitle(BuildContext context, MediaTitle t) => context.push('/title/${t.id}');
 
@@ -191,7 +192,7 @@ class RowSection extends StatelessWidget {
           child: GestureDetector(
             onTap: onTitleTap,
             child: Row(children: [
-              Flexible(child: Text(title, style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w700))),
+              Flexible(child: Text(context.tr(title), style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w700))),
               if (onTitleTap != null) const Icon(Icons.chevron_right, size: 22),
             ]),
           ),
