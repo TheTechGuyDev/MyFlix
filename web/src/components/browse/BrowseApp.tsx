@@ -4,9 +4,10 @@ import Image from "next/image";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { getAccount, getActiveProfileId, setActiveProfile, signOut, type Account, type Profile } from "@/lib/mock-auth";
-import { byId, catalog, comingSoon, featuredFor, img, rowsFor, search, type RowDef, type Tab, type Title } from "@/lib/catalog";
+import { getAccount, getActiveProfileId, setActiveProfile, settingsOf, signOut, type Account, type Profile } from "@/lib/mock-auth";
+import { allowedFor, byId, catalog, comingSoon, featuredFor, img, rowsFor, search, type RowDef, type Tab, type Title } from "@/lib/catalog";
 import { useLibrary, type LibraryApi } from "@/lib/library";
+import type { Maturity } from "@/lib/catalog";
 import Navbar from "./Navbar";
 import Hero from "./Hero";
 import Row from "./Row";
@@ -30,6 +31,7 @@ export default function BrowseApp() {
   const rawTab = params.get("tab") as Tab | null;
   const tab: Tab = rawTab && TABS.includes(rawTab) ? rawTab : "home";
   const kids = Boolean(profile?.kids);
+  const max = profile ? settingsOf(profile).maturity : "18+";
 
   useEffect(() => {
     const acc = getAccount();
@@ -67,19 +69,19 @@ export default function BrowseApp() {
 
   const rows = useMemo<RowDef[]>(() => {
     if (!profile) return [];
-    const base = rowsFor(tab === "new" ? "home" : tab, kids);
+    const base = rowsFor(tab === "new" ? "home" : tab, kids, max);
     const continueItems = Object.entries(library.lib.progress)
       .sort((a, b) => b[1].updatedAt.localeCompare(a[1].updatedAt))
       .map(([id]) => byId(id))
-      .filter((t): t is Title => Boolean(t) && (!kids || Boolean(t!.kids)))
+      .filter((t): t is Title => Boolean(t) && (!kids || Boolean(t!.kids)) && allowedFor(t!, max))
       .filter((t) => tab === "home" || (tab === "series" ? t.type === "series" : tab === "movies" ? t.type === "movie" : true));
-    const myList = library.lib.list.map(byId).filter((t): t is Title => Boolean(t));
+    const myList = library.lib.list.map(byId).filter((t): t is Title => Boolean(t) && allowedFor(t!, max));
 
     const out = [...base];
     if (continueItems.length) out.splice(0, 0, { id: "continue", title: `Continue Watching for ${profile.name}`, items: continueItems, progress: true });
     if (tab === "home" && myList.length) out.splice(continueItems.length ? 2 : 1, 0, { id: "mylist", title: "My List", items: myList });
     return out;
-  }, [profile, tab, kids, library.lib]);
+  }, [profile, tab, kids, max, library.lib]);
 
   if (!profile || !account) return <div className="min-h-screen bg-ink" />;
 
@@ -92,7 +94,7 @@ export default function BrowseApp() {
     window.scrollTo({ top: 0 });
   };
 
-  const results = query ? search(query, kids) : null;
+  const results = query ? search(query, kids, max) : null;
 
   return (
     <div className="min-h-screen overflow-x-hidden bg-ink">
@@ -109,7 +111,6 @@ export default function BrowseApp() {
           router.push("/");
         }}
         onOpenTitle={(id) => setOpen(byId(id) ?? null)}
-        onNotice={setNotice}
       />
 
       {results ? (
@@ -117,10 +118,10 @@ export default function BrowseApp() {
       ) : tab === "mylist" ? (
         <MyList library={library} onOpen={openTitle} onPlay={play} onBrowse={() => setTab("home")} />
       ) : tab === "new" ? (
-        <NewAndPopular library={library} rows={rows} onOpen={openTitle} onPlay={play} />
+        <NewAndPopular library={library} rows={rows} max={max} onOpen={openTitle} onPlay={play} />
       ) : (
         <>
-          <Hero title={featuredFor(tab, kids)} onPlay={play} onInfo={openTitle} />
+          <Hero title={featuredFor(tab, kids, max)} onPlay={play} onInfo={openTitle} />
           <div className="relative z-10 -mt-12 space-y-6 pb-10 sm:-mt-20 sm:space-y-10 lg:-mt-32">
             {rows.map((r) => (
               <Row key={r.id} row={r} library={library} onOpen={openTitle} onPlay={play} />
@@ -131,7 +132,7 @@ export default function BrowseApp() {
 
       <BrowseFooter />
 
-      {open && <DetailsModal title={open} kids={kids} library={library} onClose={closeModal} onPlay={play} onOpen={openTitle} />}
+      {open && <DetailsModal title={open} kids={kids} max={max} library={library} onClose={closeModal} onPlay={play} onOpen={openTitle} />}
 
       {notice && (
         <div role="status" className="fixed bottom-6 left-1/2 z-[60] w-[90%] max-w-md -translate-x-1/2 rounded-md bg-white px-4 py-3 text-center text-sm font-medium text-ink shadow-2xl">
@@ -196,9 +197,9 @@ function MyList({ library, onBrowse, ...rest }: { library: LibraryApi; onOpen: (
   );
 }
 
-function NewAndPopular({ library, rows, onOpen, onPlay }: { library: LibraryApi; rows: RowDef[]; onOpen: (t: Title) => void; onPlay: (t: Title) => void }) {
+function NewAndPopular({ library, rows, max, onOpen, onPlay }: { library: LibraryApi; rows: RowDef[]; max: Maturity; onOpen: (t: Title) => void; onPlay: (t: Title) => void }) {
   const [reminders, setReminders] = useState<string[]>([]);
-  const fresh: RowDef = { id: "fresh", title: "New on MyFlix", items: catalog.filter((t) => t.isNew && !t.comingSoon) };
+  const fresh: RowDef = { id: "fresh", title: "New on MyFlix", items: catalog.filter((t) => t.isNew && !t.comingSoon && allowedFor(t, max)) };
   const top = rows.find((r) => r.id === "top10");
 
   return (
@@ -210,7 +211,7 @@ function NewAndPopular({ library, rows, onOpen, onPlay }: { library: LibraryApi;
       <section className="mt-6 px-4 sm:px-10 lg:px-14">
         <h2 className="mb-4 text-lg font-bold sm:text-xl">Coming Soon</h2>
         <ul className="space-y-8">
-          {comingSoon().map((t) => {
+          {comingSoon().filter((t) => allowedFor(t, max)).map((t) => {
             const on = reminders.includes(t.id);
             return (
               <li key={t.id} className="grid gap-4 sm:grid-cols-[120px_1fr] lg:grid-cols-[120px_minmax(0,560px)_1fr]">

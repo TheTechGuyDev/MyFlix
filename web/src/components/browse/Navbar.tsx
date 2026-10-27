@@ -33,7 +33,6 @@ type Props = {
   onSwitch: (p: Profile) => void;
   onSignOut: () => void;
   onOpenTitle: (id: string) => void;
-  onNotice: (msg: string) => void;
 };
 
 function useClickAway(open: boolean, close: () => void) {
@@ -47,7 +46,7 @@ function useClickAway(open: boolean, close: () => void) {
   return ref;
 }
 
-export default function Navbar({ tab, onTab, query, onQuery, profile, profiles, onSwitch, onSignOut, onOpenTitle, onNotice }: Props) {
+export default function Navbar({ tab, onTab, query, onQuery, profile, profiles, onSwitch, onSignOut, onOpenTitle }: Props) {
   const [solid, setSolid] = useState(false);
   const [searchOpen, setSearchOpen] = useState(Boolean(query));
   const [menu, setMenu] = useState<null | "browse" | "bell" | "profile">(null);
@@ -182,7 +181,7 @@ export default function Navbar({ tab, onTab, query, onQuery, profile, profiles, 
                     </li>
                   ))}
                   <li><Link href="/profiles" className="block px-4 py-2 hover:underline">Manage Profiles</Link></li>
-                  <li><button onClick={() => { onNotice("The Account page is coming in a later step."); close(); }} className="block w-full px-4 py-2 text-left hover:underline">Account</button></li>
+                  <li><Link href="/account" className="block px-4 py-2 hover:underline">Account</Link></li>
                   <li><Link href="/#faq" className="block px-4 py-2 hover:underline">Help Centre</Link></li>
                 </ul>
                 <button onClick={onSignOut} className="block w-full border-t border-white/20 px-4 py-3 text-center hover:underline">

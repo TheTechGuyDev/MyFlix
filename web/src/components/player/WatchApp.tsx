@@ -2,8 +2,8 @@
 
 import { useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useState } from "react";
-import { catalog } from "@/lib/catalog";
-import { getAccount, getActiveProfileId, type Account, type Profile } from "@/lib/mock-auth";
+import { allowedFor, catalog } from "@/lib/catalog";
+import { getAccount, getActiveProfileId, settingsOf, type Account, type Profile } from "@/lib/mock-auth";
 import { readProgress } from "@/lib/library";
 import Player from "./Player";
 
@@ -22,7 +22,7 @@ export default function WatchApp() {
     if (!account.payment) return router.replace("/signup/payment");
     const profile = account.profiles.find((p) => p.id === getActiveProfileId());
     if (!profile) return router.replace("/profiles");
-    if (!title || title.comingSoon || (profile.kids && !title.kids)) return router.replace("/browse");
+    if (!title || title.comingSoon || (profile.kids && !title.kids) || !allowedFor(title, settingsOf(profile).maturity)) return router.replace("/browse");
     setCtx({ account, profile });
   }, [router, title]);
 
@@ -42,6 +42,7 @@ export default function WatchApp() {
       episode={episode}
       profileId={ctx.profile.id}
       planId={ctx.account.planId ?? "standard"}
+      prefs={settingsOf(ctx.profile)}
     />
   );
 }

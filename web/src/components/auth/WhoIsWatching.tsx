@@ -1,7 +1,7 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Logo from "@/components/landing/Logo";
 import { getAccount, MAX_PROFILES, newId, nextStep, saveProfiles, setActiveProfile, type Profile } from "@/lib/mock-auth";
 import Avatar, { avatarColors } from "./Avatar";
@@ -12,6 +12,7 @@ export default function WhoIsWatching() {
   const [ready, setReady] = useState(false);
   const [manage, setManage] = useState(false);
   const [editing, setEditing] = useState<Profile | null>(null);
+  const [locked, setLocked] = useState<Profile | null>(null);
 
   useEffect(() => {
     const acc = getAccount();
@@ -29,6 +30,7 @@ export default function WhoIsWatching() {
 
   const pick = (p: Profile) => {
     if (manage) return setEditing(p);
+    if (p.settings?.pin) return setLocked(p);
     setActiveProfile(p.id);
     router.push("/browse");
   };
@@ -82,6 +84,17 @@ export default function WhoIsWatching() {
         </button>
       </main>
 
+      {locked && (
+        <PinPrompt
+          profile={locked}
+          onCancel={() => setLocked(null)}
+          onOk={() => {
+            setActiveProfile(locked.id);
+            router.push("/browse");
+          }}
+        />
+      )}
+
       {editing && (
         <ProfileEditor
           profile={editing}
@@ -98,6 +111,60 @@ export default function WhoIsWatching() {
           }}
         />
       )}
+    </div>
+  );
+}
+
+function PinPrompt({ profile, onOk, onCancel }: { profile: Profile; onOk: () => void; onCancel: () => void }) {
+  const [digits, setDigits] = useState(["", "", "", ""]);
+  const [error, setError] = useState(false);
+  const refs = [useRef<HTMLInputElement>(null), useRef<HTMLInputElement>(null), useRef<HTMLInputElement>(null), useRef<HTMLInputElement>(null)];
+
+  useEffect(() => {
+    refs[0].current?.focus();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const set = (i: number, v: string) => {
+    const d = v.replace(/\D/g, "").slice(-1);
+    const next = digits.map((x, j) => (j === i ? d : x));
+    setDigits(next);
+    setError(false);
+    if (d && i < 3) refs[i + 1].current?.focus();
+    if (next.every(Boolean)) {
+      if (next.join("") === profile.settings?.pin) onOk();
+      else {
+        setError(true);
+        setDigits(["", "", "", ""]);
+        refs[0].current?.focus();
+      }
+    }
+  };
+
+  return (
+    <div role="dialog" aria-modal="true" className="fixed inset-0 z-50 flex flex-col items-center justify-center bg-ink px-4 text-center">
+      <button onClick={onCancel} aria-label="Close" className="absolute right-6 top-6 text-white/70 hover:text-white">
+        <svg viewBox="0 0 24 24" className="h-8 w-8" fill="none" stroke="currentColor" strokeWidth="2"><path d="M6 6l12 12M18 6 6 18" /></svg>
+      </button>
+      <p className="text-white/70">Profile Lock is on.</p>
+      <h2 className="mt-2 text-2xl font-medium sm:text-4xl">Enter your PIN to access {profile.name}.</h2>
+      <div className="mt-8 flex gap-3">
+        {digits.map((d, i) => (
+          <input
+            key={i}
+            ref={refs[i]}
+            value={d}
+            onChange={(e) => set(i, e.target.value)}
+            onKeyDown={(e) => e.key === "Backspace" && !d && i > 0 && refs[i - 1].current?.focus()}
+            inputMode="numeric"
+            type="password"
+            aria-label={`PIN digit ${i + 1}`}
+            className={`h-16 w-14 rounded border-2 bg-transparent text-center text-3xl outline-none focus:scale-110 focus:border-white sm:h-20 sm:w-16 ${error ? "border-danger" : "border-white/50"}`}
+          />
+        ))}
+      </div>
+      {error && <p className="mt-4 text-danger">Whoops, wrong PIN. Please try again.</p>}
+      <p className="mt-8 text-sm text-white/60">Forgot PIN? Change it from Account → Profiles.</p>
     </div>
   );
 }

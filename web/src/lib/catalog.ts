@@ -85,14 +85,18 @@ export const catalog: Title[] = [
 
 export const byId = (id: string) => catalog.find((t) => t.id === id);
 
+const ORDER: Maturity[] = ["All", "7+", "13+", "16+", "18+"];
+/** True when a title's rating is within a profile's maturity limit. */
+export const allowedFor = (t: Title, max: Maturity = "18+") => ORDER.indexOf(t.maturity) <= ORDER.indexOf(max);
+
 export type Tab = "home" | "series" | "movies" | "new" | "mylist";
 
 export type RowDef = { id: string; title: string; items: Title[]; ranked?: boolean; progress?: boolean };
 
 const released = (t: Title) => !t.comingSoon;
 
-export function rowsFor(tab: Tab, kids: boolean): RowDef[] {
-  let pool = catalog.filter(released);
+export function rowsFor(tab: Tab, kids: boolean, max: Maturity = "18+"): RowDef[] {
+  let pool = catalog.filter((t) => released(t) && allowedFor(t, max));
   if (kids) pool = pool.filter((t) => t.kids);
   if (tab === "series") pool = pool.filter((t) => t.type === "series");
   if (tab === "movies") pool = pool.filter((t) => t.type === "movie");
@@ -125,27 +129,27 @@ export function rowsFor(tab: Tab, kids: boolean): RowDef[] {
   ].filter((r) => r.items.length >= 2);
 }
 
-export function featuredFor(tab: Tab, kids: boolean): Title {
-  const pool = catalog.filter((t) => released(t) && (!kids || t.kids));
-  if (kids) return pool.find((t) => t.id === "compound-kids") ?? pool[0];
-  if (tab === "movies") return byId("third-mainland")!;
-  if (tab === "series") return byId("queen-of-balogun")!;
-  return byId("eko-nights")!;
+export function featuredFor(tab: Tab, kids: boolean, max: Maturity = "18+"): Title {
+  const pool = catalog.filter((t) => released(t) && (!kids || t.kids) && allowedFor(t, max));
+  const pick = kids ? "compound-kids" : tab === "movies" ? "third-mainland" : tab === "series" ? "queen-of-balogun" : "eko-nights";
+  const typed = pool.filter((t) => tab === "movies" ? t.type === "movie" : tab === "series" ? t.type === "series" : true);
+  return pool.find((t) => t.id === pick) ?? [...typed].sort((a, b) => b.match - a.match)[0] ?? pool[0] ?? catalog[0];
 }
 
-export function search(q: string, kids: boolean): Title[] {
+export function search(q: string, kids: boolean, max: Maturity = "18+"): Title[] {
   const s = q.trim().toLowerCase();
   if (!s) return [];
   return catalog.filter(
     (t) =>
       (!kids || t.kids) &&
+      allowedFor(t, max) &&
       [t.title, ...t.genres, ...t.cast, ...t.tags].some((x) => x.toLowerCase().includes(s)),
   );
 }
 
-export function similarTo(t: Title, kids: boolean): Title[] {
+export function similarTo(t: Title, kids: boolean, max: Maturity = "18+"): Title[] {
   return catalog
-    .filter((x) => x.id !== t.id && (!kids || x.kids) && x.genres.some((g) => t.genres.includes(g)))
+    .filter((x) => x.id !== t.id && (!kids || x.kids) && allowedFor(x, max) && x.genres.some((g) => t.genres.includes(g)))
     .slice(0, 9);
 }
 

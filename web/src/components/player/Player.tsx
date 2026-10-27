@@ -15,6 +15,7 @@ type Props = {
   episode: number;
   profileId: string;
   planId: string;
+  prefs: { autoplayNext: boolean; dataUsage: "auto" | "saver" | "hd" | "4k"; subtitleSize: "small" | "medium" | "large"; subtitleBg: "none" | "shadow" | "box" };
 };
 
 type Track = { id: number; label: string };
@@ -30,7 +31,7 @@ const fmt = (s: number) => {
 };
 const qualityLabel = (h: number) => (h >= 2160 ? "4K" : h >= 1440 ? "1440p" : `${h}p`);
 
-export default function Player({ title, titleIndex, season, episode, profileId, planId }: Props) {
+export default function Player({ title, titleIndex, season, episode, profileId, planId, prefs }: Props) {
   const router = useRouter();
   const wrapRef = useRef<HTMLDivElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -129,6 +130,14 @@ export default function Player({ title, titleIndex, season, episode, profileId, 
         const unique = new Map<number, number>();
         allowed.forEach((l) => unique.set(l.height, l.index));
         setLevels([...unique.entries()].map(([height, index]) => ({ height, index })).sort((a, b) => b.height - a.height));
+        // Profile data-usage preference
+        if (prefs.dataUsage === "saver" || prefs.dataUsage === "hd") {
+          const limit = prefs.dataUsage === "saver" ? 480 : 1080;
+          const within = allowed.filter((l) => l.height <= limit);
+          const pick = within.length ? Math.max(...within.map((l) => l.index)) : Math.min(...allowed.map((l) => l.index));
+          if (isFinite(pick)) hls.autoLevelCapping = pick;
+          if (prefs.dataUsage === "saver") setQuality("saver");
+        }
         v.play().catch(() => setPlaying(false));
       });
       hls.on(Hls.Events.LEVEL_SWITCHED, (_e, d) => setActualHeight(hls.levels[d.level]?.height ?? 0));
@@ -165,7 +174,7 @@ export default function Player({ title, titleIndex, season, episode, profileId, 
       v.removeAttribute("src");
       v.load();
     };
-  }, [sources, srcIdx, profileId, title.id, season, episode, maxHeight]);
+  }, [sources, srcIdx, profileId, title.id, season, episode, maxHeight, prefs.dataUsage]);
 
   // Save on leave
   useEffect(() => {
@@ -354,7 +363,7 @@ export default function Player({ title, titleIndex, season, episode, profileId, 
 
   /* ---------------- Next episode countdown ---------------- */
   useEffect(() => {
-    if (!ended || !nextEp) return;
+    if (!ended || !nextEp || !prefs.autoplayNext) return;
     setCountdown(10);
     const id = setInterval(() => {
       setCountdown((c) => {
@@ -367,7 +376,7 @@ export default function Player({ title, titleIndex, season, episode, profileId, 
       });
     }, 1000);
     return () => clearInterval(id);
-  }, [ended, nextEp, goEpisode]);
+  }, [ended, nextEp, goEpisode, prefs.autoplayNext]);
 
   /* ---------------- Seek bar ---------------- */
   const barRef = useRef<HTMLDivElement>(null);
@@ -411,6 +420,7 @@ export default function Player({ title, titleIndex, season, episode, profileId, 
       onTouchStart={poke}
       className={`fixed inset-0 z-50 select-none bg-black text-white ${showUi ? "" : "cursor-none"}`}
     >
+      <style>{`video::cue{font-size:${prefs.subtitleSize === "small" ? "clamp(13px,1.8vw,22px)" : prefs.subtitleSize === "large" ? "clamp(20px,3.2vw,44px)" : "clamp(16px,2.4vw,32px)"};background:${prefs.subtitleBg === "box" ? "rgba(0,0,0,.8)" : "transparent"};text-shadow:${prefs.subtitleBg === "shadow" ? "0 0 4px #000,0 0 4px #000" : "none"}}`}</style>
       <video
         ref={videoRef}
         className="h-full w-full"
@@ -505,7 +515,7 @@ export default function Player({ title, titleIndex, season, episode, profileId, 
             S{nextEp.season}:E{nextEp.episode} {nextEp.season === season ? episodes.find((x) => x.number === nextEp.episode)?.title : "Pilot"}
           </p>
           <button onClick={() => goEpisode(nextEp.season, nextEp.episode)} className="mt-3 flex w-full items-center justify-center gap-2 rounded bg-white py-2 font-bold text-ink hover:bg-white/80">
-            <IcPlay className="h-5 w-5" /> {ended ? `Playing in ${countdown}s` : "Next Episode"}
+            <IcPlay className="h-5 w-5" /> {ended && prefs.autoplayNext ? `Playing in ${countdown}s` : "Next Episode"}
           </button>
         </div>
       )}

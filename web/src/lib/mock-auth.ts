@@ -8,20 +8,82 @@ import type { PlanId } from "./plans";
 
 export type PaymentMethod = "card" | "transfer" | "ussd";
 
+export type Maturity = "All" | "7+" | "13+" | "16+" | "18+";
+export type DataUsage = "auto" | "saver" | "hd" | "4k";
+
+export type ProfileSettings = {
+  language: string;
+  maturity: Maturity;
+  pin?: string;
+  autoplayNext: boolean;
+  autoplayPreviews: boolean;
+  dataUsage: DataUsage;
+  subtitleSize: "small" | "medium" | "large";
+  subtitleBg: "none" | "shadow" | "box";
+};
+
 export type Profile = {
   id: string;
   name: string;
   avatar: number;
   kids: boolean;
+  settings?: Partial<ProfileSettings>;
+};
+
+export type BillingRecord = {
+  id: string;
+  date: string;
+  amount: number;
+  planId: PlanId;
+  method: PaymentMethod;
+  last4?: string;
+  status: "Paid" | "Refunded";
+};
+
+export type Device = { id: string; name: string; location: string; lastUsed: string; current?: boolean };
+
+export type NotificationPrefs = {
+  newArrivals: boolean;
+  reminders: boolean;
+  recommendations: boolean;
+  billing: boolean;
+  offers: boolean;
+  push: boolean;
 };
 
 export type Account = {
   email: string;
   passwordHash: string;
   createdAt: string;
+  phone?: string;
   planId?: PlanId;
   payment?: { method: PaymentMethod; last4?: string; paidAt: string; renewsAt: string };
+  cancelAt?: string;
+  billing?: BillingRecord[];
+  devices?: Device[];
+  notifications?: NotificationPrefs;
   profiles: Profile[];
+};
+
+export const defaultSettings = (kids: boolean): ProfileSettings => ({
+  language: "English",
+  maturity: kids ? "7+" : "18+",
+  autoplayNext: true,
+  autoplayPreviews: true,
+  dataUsage: "auto",
+  subtitleSize: "medium",
+  subtitleBg: "shadow",
+});
+
+export const settingsOf = (p: Profile): ProfileSettings => ({ ...defaultSettings(p.kids), ...p.settings });
+
+export const defaultNotifications: NotificationPrefs = {
+  newArrivals: true,
+  reminders: true,
+  recommendations: true,
+  billing: true,
+  offers: false,
+  push: true,
 };
 
 const USERS_KEY = "myflix.users";
@@ -126,7 +188,114 @@ export async function completePayment(method: PaymentMethod, last4?: string) {
   const now = new Date();
   const renews = new Date(now);
   renews.setMonth(renews.getMonth() + 1);
-  return update((a) => ({ ...a, payment: { method, last4, paidAt: now.toISOString(), renewsAt: renews.toISOString() } }));
+  return update((a) => ({
+    ...a,
+    payment: { method, last4, paidAt: now.toISOString(), renewsAt: renews.toISOString() },
+    billing: [
+      { id: `INV-${Date.now().toString().slice(-8)}`, date: now.toISOString(), amount: planPrice(a.planId), planId: a.planId ?? "standard", method, last4, status: "Paid" as const },
+      ...(a.billing ?? []),
+    ],
+    devices: a.devices ?? [thisDevice()],
+  }));
+}
+
+/* ---------------- Account management ---------------- */
+
+const PRICES: Record<string, number> = { mobile: 1500, basic: 2500, standard: 4000, premium: 5500 };
+const planPrice = (id?: PlanId) => PRICES[id ?? "standard"] ?? 0;
+
+function thisDevice(): Device {
+  const ua = typeof navigator !== "undefined" ? navigator.userAgent : "";
+  const browser = /Edg/.test(ua) ? "Edge" : /Chrome/.test(ua) ? "Chrome" : /Safari/.test(ua) ? "Safari" : /Firefox/.test(ua) ? "Firefox" : "Browser";
+  const os = /Android/.test(ua) ? "Android" : /iPhone|iPad/.test(ua) ? "iOS" : /Mac/.test(ua) ? "Mac" : /Windows/.test(ua) ? "Windows" : "Linux";
+  return { id: "this", name: `${browser} on ${os}`, location: "Lagos, Nigeria", lastUsed: new Date().toISOString(), current: true };
+}
+
+/** Billing history, including a record derived from the first payment for older demo accounts. */
+export function billingHistory(a: Account): BillingRecord[] {
+  if (a.billing?.length) return a.billing;
+  if (!a.payment) return [];
+  return [{ id: "INV-00000001", date: a.payment.paidAt, amount: planPrice(a.planId), planId: a.planId ?? "standard", method: a.payment.method, last4: a.payment.last4, status: "Paid" }];
+}
+
+export function devicesOf(a: Account): Device[] {
+  const now = Date.now();
+  const list = a.devices ?? [thisDevice()];
+  const others: Device[] = [
+    { id: "tv", name: "Samsung Smart TV", location: "Lagos, Nigeria", lastUsed: new Date(now - 864e5).toISOString() },
+    { id: "android", name: "MyFlix app on Android", location: "Ibadan, Nigeria", lastUsed: new Date(now - 3 * 864e5).toISOString() },
+  ];
+  return a.devices ? list : [...list, ...others];
+}
+
+export async function changePlanNow(planId: PlanId) {
+  await wait(800);
+  return update((a) => ({ ...a, planId }));
+}
+
+export async function cancelMembership() {
+  await wait(800);
+  return update((a) => ({ ...a, cancelAt: a.payment?.renewsAt ?? new Date().toISOString() }));
+}
+
+export async function restartMembership() {
+  await wait(800);
+  return update((a) => ({ ...a, cancelAt: undefined }));
+}
+
+export async function updatePaymentMethod(method: PaymentMethod, last4?: string) {
+  await wait(1000);
+  return update((a) => (a.payment ? { ...a, payment: { ...a.payment, method, last4 } } : a));
+}
+
+export async function changeEmail(newEmail: string, password: string): Promise<Result<Account>> {
+  await wait(800);
+  const acc = getAccount();
+  if (!acc) return { ok: false, error: "Your session has expired. Please sign in again." };
+  if (acc.passwordHash !== (await hash(password))) return { ok: false, error: "Incorrect password." };
+  const e = normal(newEmail);
+  if (e !== acc.email && users()[e]) return { ok: false, error: "Another account already uses this email." };
+  const all = users();
+  delete all[acc.email];
+  const next = { ...acc, email: e };
+  write(USERS_KEY, { ...all, [e]: next });
+  write(SESSION_KEY, e);
+  return { ok: true, data: next };
+}
+
+export async function changePassword(current: string, nextPw: string): Promise<Result<Account>> {
+  await wait(800);
+  const acc = getAccount();
+  if (!acc) return { ok: false, error: "Your session has expired. Please sign in again." };
+  if (acc.passwordHash !== (await hash(current))) return { ok: false, error: "Your current password is incorrect." };
+  const passwordHash = await hash(nextPw);
+  return update((a) => ({ ...a, passwordHash }));
+}
+
+export async function updatePhone(phone: string) {
+  await wait(500);
+  return update((a) => ({ ...a, phone }));
+}
+
+export async function signOutAllDevices() {
+  await wait(800);
+  update((a) => ({ ...a, devices: [thisDevice()] }));
+  signOut();
+}
+
+export async function removeDevice(id: string) {
+  await wait(400);
+  return update((a) => ({ ...a, devices: devicesOf(a).filter((d) => d.id !== id) }));
+}
+
+export async function updateProfile(profile: Profile) {
+  await wait(500);
+  return update((a) => ({ ...a, profiles: a.profiles.map((p) => (p.id === profile.id ? profile : p)) }));
+}
+
+export async function updateNotifications(n: NotificationPrefs) {
+  await wait(400);
+  return update((a) => ({ ...a, notifications: n }));
 }
 
 export async function saveProfiles(profiles: Profile[]) {

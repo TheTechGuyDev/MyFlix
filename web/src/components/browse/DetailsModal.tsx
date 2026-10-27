@@ -2,7 +2,7 @@
 
 import Image from "next/image";
 import { useEffect, useState } from "react";
-import { episodesFor, img, similarTo, type Title } from "@/lib/catalog";
+import { episodesFor, img, similarTo, type Maturity, type Title } from "@/lib/catalog";
 import type { LibraryApi } from "@/lib/library";
 import { metaLine } from "./TitleCard";
 import { CheckIcon, CloseIcon, PlayIcon, PlusIcon, ThumbIcon, VolumeIcon } from "./icons";
@@ -10,18 +10,19 @@ import { CheckIcon, CloseIcon, PlayIcon, PlusIcon, ThumbIcon, VolumeIcon } from 
 type Props = {
   title: Title;
   kids: boolean;
+  max?: Maturity;
   library: LibraryApi;
   onClose: () => void;
   onPlay: (t: Title, season?: number, episode?: number) => void;
   onOpen: (t: Title) => void;
 };
 
-export default function DetailsModal({ title: t, kids, library, onClose, onPlay, onOpen }: Props) {
+export default function DetailsModal({ title: t, kids, max = "18+", library, onClose, onPlay, onOpen }: Props) {
   const [season, setSeason] = useState(1);
   const inList = library.lib.list.includes(t.id);
   const rating = library.lib.ratings[t.id];
   const progress = library.lib.progress[t.id];
-  const similar = similarTo(t, kids);
+  const similar = similarTo(t, kids, max);
 
   useEffect(() => {
     setSeason(1);
