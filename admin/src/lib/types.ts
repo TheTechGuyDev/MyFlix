@@ -232,6 +232,8 @@ export type Settings = {
   maxProfiles: number;
   paystackPublicKey: string;
   paystackSecretSet: boolean;
+  paystackMode?: string | null;
+  paystackKeyEnd?: string | null;
   flutterwaveEnabled: boolean;
   ussdEnabled: boolean;
   transferEnabled: boolean;

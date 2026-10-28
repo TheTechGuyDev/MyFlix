@@ -5,7 +5,7 @@ insert into auth.users (id, email, raw_user_meta_data) values
  ('33333333-3333-3333-3333-333333333333', 'staff@myflix.ng', '{}');
 select email, status, referral_code, referred_by from accounts order by email;
 insert into staff (user_id, name, email, role_id) values ('33333333-3333-3333-3333-333333333333', 'Owner', 'staff@myflix.ng', 'super');
-insert into titles (id, title, type, status) values ('eko-nights', 'Eko Nights', 'series', 'published'), ('draft-one', 'Draft', 'movie', 'draft');
+delete from titles; insert into titles (id, title, type, status) values ('eko-nights', 'Eko Nights', 'series', 'published'), ('draft-one', 'Draft', 'movie', 'draft');
 insert into promos (code, label, kind, value) values ('WELCOME50', '50% off', 'percent', 50);
 
 -- ===== as Ada (member)

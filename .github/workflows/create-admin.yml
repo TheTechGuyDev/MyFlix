@@ -1,0 +1,54 @@
+name: Create staff admin
+
+# Run by hand (Actions > Create staff admin > Run workflow). Creates a confirmed sign-in for the
+# admin dashboard and makes it a Super Admin. Inputs are masked and never printed.
+on:
+  workflow_dispatch:
+    inputs:
+      email:
+        description: Admin email
+        required: true
+      password:
+        description: Temporary password (change it after testing)
+        required: true
+
+jobs:
+  create:
+    runs-on: ubuntu-latest
+    env:
+      SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+      REF: ${{ secrets.SUPABASE_PROJECT_REF }}
+    steps:
+      - name: Create admin
+        env:
+          EMAIL: ${{ inputs.email }}
+          PASSWORD: ${{ inputs.password }}
+        run: |
+          echo "::add-mask::$PASSWORD"
+          set -euo pipefail
+          keys=$(curl -fsS -H "Authorization: Bearer $SUPABASE_ACCESS_TOKEN" "https://api.supabase.com/v1/projects/$REF/api-keys?reveal=true")
+          KEY=$(echo "$keys" | jq -r '[.[] | select(.name == "service_role")][0].api_key // empty')
+          [[ -z "$KEY" ]] && KEY=$(echo "$keys" | jq -r '[.[] | select(.type == "secret")][0].api_key // empty')
+          echo "::add-mask::$KEY"
+          H=(-H "apikey: $KEY" -H "Content-Type: application/json")
+          [[ "$KEY" == ey* ]] && H+=(-H "Authorization: Bearer $KEY")
+          URL="https://$REF.supabase.co"
+          EMAIL=$(echo "$EMAIL" | tr 'A-Z' 'a-z' | xargs)
+
+          # Create the sign-in (already confirmed), or reset the password if it exists
+          body=$(jq -n --arg e "$EMAIL" --arg p "$PASSWORD" '{email:$e, password:$p, email_confirm:true}')
+          res=$(curl -sS -X POST "$URL/auth/v1/admin/users" "${H[@]}" -d "$body")
+          uid=$(echo "$res" | jq -r '.id // empty')
+          if [[ -z "$uid" ]]; then
+            uid=$(curl -fsS "$URL/rest/v1/accounts?select=id&email=eq.$EMAIL" "${H[@]}" | jq -r '.[0].id // empty')
+            [[ -z "$uid" ]] && { echo "::error::Couldn't create the user: $(echo "$res" | jq -r '.msg // .message // .error_description // .')"; exit 1; }
+            curl -fsS -X PUT "$URL/auth/v1/admin/users/$uid" "${H[@]}" -d "$(jq -n --arg p "$PASSWORD" '{password:$p, email_confirm:true}')" > /dev/null
+            echo "Existing user: password updated"
+          fi
+
+          # Make it a Super Admin
+          curl -fsS -X POST "$URL/rest/v1/staff?on_conflict=user_id" "${H[@]}" -H "Prefer: resolution=merge-duplicates,return=minimal" \
+            -d "$(jq -n --arg u "$uid" --arg e "$EMAIL" '{user_id:$u, name:"Admin", email:$e, role_id:"super", active:true}')"
+          curl -fsS -X POST "$URL/rest/v1/audit_log" "${H[@]}" -H "Prefer: return=minimal" \
+            -d "$(jq -n --arg e "$EMAIL" '{staff_name:"Setup", action:"Created Super Admin", target:$e}')"
+          echo "Super Admin ready: $EMAIL"

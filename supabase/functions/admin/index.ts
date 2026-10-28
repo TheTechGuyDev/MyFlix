@@ -2,7 +2,7 @@
 // (with two-step sign-in) and is written to the audit log.
 import { env, fail, HttpError, json, serve, site } from "../_shared/cors.ts";
 import { admin, audit, requireStaff, requireUser } from "../_shared/supabase.ts";
-import { applyPayment, paystack } from "../_shared/paystack.ts";
+import { applyPayment, forgetPaystackKey, paystack } from "../_shared/paystack.ts";
 import { layout, sendEmail } from "../_shared/messages.ts";
 
 serve(async (req) => {
@@ -84,6 +84,38 @@ serve(async (req) => {
     if (b.end_access) await admin.from("accounts").update({ status: "cancelled", paid_until: new Date().toISOString(), cancel_at: new Date().toISOString() }).eq("id", pay.account_id);
     await audit(user.id, name, "Refunded payment", `${pay.reference} (₦${amount})`);
     return json({ ok: true });
+  }
+
+  if (b.action === "paystack_keys") {
+    // The owner pastes the Paystack keys in Admin > Settings. The secret key is checked with
+    // Paystack, then kept in the private schema; only its last 4 characters are ever shown again.
+    const { user, name } = await requireStaff(req, "settings");
+    const pub = String(b.public_key ?? "").trim();
+    const sec = String(b.secret_key ?? "").trim();
+    const { data: row } = await admin.from("site_settings").select("data").eq("id", 1).single();
+    const data = (row?.data ?? {}) as Record<string, unknown>;
+    if (b.remove) {
+      await admin.rpc("set_private_secret", { p_name: "paystack_secret_key", p_value: "" });
+      Object.assign(data, { paystackSecretSet: false, paystackMode: null, paystackKeyEnd: null });
+    } else {
+      if (pub && !/^pk_(test|live)_[A-Za-z0-9]{20,}$/.test(pub)) throw new HttpError(400, "The public key should start with pk_test_ or pk_live_.");
+      if (sec) {
+        if (!/^sk_(test|live)_[A-Za-z0-9]{20,}$/.test(sec)) throw new HttpError(400, "The secret key should start with sk_test_ or sk_live_.");
+        if (pub && pub.split("_")[1] !== sec.split("_")[1]) throw new HttpError(400, "Use keys from the same mode: both test or both live.");
+        try {
+          await paystack("/bank?country=nigeria&perPage=1", undefined, "GET", sec);
+        } catch {
+          throw new HttpError(400, "Paystack didn't accept that secret key. Copy it again from Paystack > Settings > API Keys & Webhooks.");
+        }
+        await admin.rpc("set_private_secret", { p_name: "paystack_secret_key", p_value: sec });
+        Object.assign(data, { paystackSecretSet: true, paystackMode: sec.split("_")[1], paystackKeyEnd: sec.slice(-4) });
+      }
+      if (pub) data.paystackPublicKey = pub;
+    }
+    await admin.from("site_settings").update({ data, updated_at: new Date().toISOString() }).eq("id", 1);
+    forgetPaystackKey();
+    await audit(user.id, name, b.remove ? "Removed Paystack keys" : "Updated Paystack keys", sec ? `${sec.split("_")[1]} mode, ending ${sec.slice(-4)}` : "public key");
+    return json({ ok: true, mode: data.paystackMode ?? null });
   }
 
   if (b.action === "verify_payment") {

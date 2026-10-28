@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { Button, Card, CardTitle, Confirm, Field, Input, PageHeader, Select, Textarea, Toggle, useToast } from "@/components/ui";
 import { sampleTitles } from "@/lib/seed";
-import { importSamples, removeSamples, setSettings, useDb } from "@/lib/store";
+import { adminAction, importSamples, removeSamples, setSettings, useDb } from "@/lib/store";
 import type { Settings } from "@/lib/types";
 
 export default function SettingsPage() {
@@ -60,6 +60,7 @@ export default function SettingsPage() {
         </Card>
         <Card className="space-y-1">
           <CardTitle title="Payments" sub="Paystack keys are kept on the server, never in the browser" />
+          <PaystackKeys />
           <Toggle label="Card payments" sub="Always on. Needed for automatic renewals." on onChange={() => toast("Cards are always on.", "bad")} />
           <Toggle label="Bank transfer" sub="Pay with a one-time account number at checkout" on={cur.transferEnabled} onChange={(v) => set({ transferEnabled: v })} />
           <Toggle label="USSD" sub="Pay by dialling a bank code" on={cur.ussdEnabled} onChange={(v) => set({ ussdEnabled: v })} />
@@ -92,6 +93,64 @@ export default function SettingsPage() {
         </Card>
       </div>
       <Confirm open={confirmRemove} danger label="Remove" title="Remove sample titles?" body="All sample titles disappear from MyFlix, including from members' lists and Continue Watching. Your own titles are not affected." onCancel={() => setConfirmRemove(false)} onConfirm={async () => { setConfirmRemove(false); setWorking(true); await removeSamples(); setWorking(false); toast("Sample titles removed."); }} />
+    </div>
+  );
+}
+
+/** Owner pastes the Paystack keys here. The secret key goes straight to the server and is never shown again. */
+function PaystackKeys() {
+  const st = useDb((d) => d.settings) as Settings & { paystackMode?: string | null; paystackKeyEnd?: string | null };
+  const toast = useToast();
+  const [pub, setPub] = useState("");
+  const [sec, setSec] = useState("");
+  const [busy, setBusy] = useState(false);
+  const webhook = `${process.env.NEXT_PUBLIC_SUPABASE_URL ?? "https://YOUR-PROJECT.supabase.co"}/functions/v1/paystack-webhook`;
+
+  const save = async (remove = false) => {
+    if (!remove && !pub.trim() && !sec.trim()) return toast("Paste at least one key.", "bad");
+    if (remove && !confirm("Remove the Paystack secret key? Members won't be able to pay until you add it again.")) return;
+    setBusy(true);
+    try {
+      await adminAction("paystack_keys", remove ? { remove: true } : { public_key: pub.trim(), secret_key: sec.trim() });
+      setPub("");
+      setSec("");
+      toast(remove ? "Paystack keys removed." : "Paystack keys saved and checked.");
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Couldn't save the keys.", "bad");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="mb-3 space-y-3 rounded-xl border border-slate-200/80 p-3 dark:border-white/10">
+      <div className="flex flex-wrap items-center gap-2 text-sm">
+        <span className="font-semibold">Paystack:</span>
+        {st.paystackSecretSet ? (
+          <span className="rounded-full bg-emerald-500/15 px-2 py-0.5 text-xs font-semibold text-emerald-700 dark:text-emerald-300">
+            Connected · {st.paystackMode === "live" ? "LIVE mode" : "Test mode"}{st.paystackKeyEnd ? ` · secret key ending ${st.paystackKeyEnd}` : ""}
+          </span>
+        ) : (
+          <span className="rounded-full bg-amber-500/15 px-2 py-0.5 text-xs font-semibold text-amber-700 dark:text-amber-300">Not connected · members can&apos;t pay yet</span>
+        )}
+      </div>
+      <Field label="Public key" hint={st.paystackPublicKey ? `Current: ${st.paystackPublicKey.slice(0, 12)}…` : "Starts with pk_test_ or pk_live_"}>
+        <Input value={pub} onChange={(e) => setPub(e.target.value)} placeholder="pk_test_..." autoComplete="off" />
+      </Field>
+      <Field label="Secret key" hint="Starts with sk_test_ or sk_live_. Checked with Paystack, then stored on the server.">
+        <Input type="password" value={sec} onChange={(e) => setSec(e.target.value)} placeholder="sk_test_..." autoComplete="new-password" />
+      </Field>
+      <div className="flex flex-wrap gap-2">
+        <Button disabled={busy} onClick={() => save()}>{busy ? "Checking…" : "Save keys"}</Button>
+        {st.paystackSecretSet && <Button variant="ghost" disabled={busy} onClick={() => save(true)}>Remove</Button>}
+      </div>
+      <div className="text-xs text-slate-500">
+        <p className="mb-1">Also paste this webhook URL in Paystack &gt; Settings &gt; API Keys &amp; Webhooks &gt; Webhook URL:</p>
+        <div className="flex items-center gap-2">
+          <code className="break-all rounded bg-slate-900/5 px-2 py-1 dark:bg-white/5">{webhook}</code>
+          <Button size="sm" variant="ghost" onClick={() => { void navigator.clipboard?.writeText(webhook); toast("Webhook URL copied."); }}>Copy</Button>
+        </div>
+      </div>
     </div>
   );
 }

@@ -4,8 +4,23 @@ import { layout, naira, notify, sendEmail } from "./messages.ts";
 
 const API = "https://api.paystack.co";
 
-export async function paystack(path: string, body?: unknown, method = body ? "POST" : "GET") {
-  const secret = env("PAYSTACK_SECRET_KEY");
+/**
+ * Paystack secret key: entered by the owner in Admin > Settings (kept in the private schema),
+ * or a PAYSTACK_SECRET_KEY function secret if one is set.
+ */
+let cached: { key: string; at: number } | null = null;
+export async function paystackKey(): Promise<string> {
+  const fromEnv = env("PAYSTACK_SECRET_KEY");
+  if (fromEnv) return fromEnv;
+  if (cached && Date.now() - cached.at < 60_000) return cached.key;
+  const { data } = await admin.rpc("get_private_secret", { p_name: "paystack_secret_key" });
+  cached = { key: (data as string | null) ?? "", at: Date.now() };
+  return cached.key;
+}
+export const forgetPaystackKey = () => (cached = null);
+
+export async function paystack(path: string, body?: unknown, method = body ? "POST" : "GET", secretOverride?: string) {
+  const secret = secretOverride ?? (await paystackKey());
   if (!secret) throw new HttpError(503, "Payments aren't set up yet. Please try again later.");
   const res = await fetch(`${API}${path}`, {
     method,
@@ -20,7 +35,7 @@ export async function paystack(path: string, body?: unknown, method = body ? "PO
 /** Verifies the x-paystack-signature header (HMAC SHA-512 of the raw body). */
 export async function verifySignature(raw: string, signature: string | null) {
   if (!signature) return false;
-  const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(env("PAYSTACK_SECRET_KEY")), { name: "HMAC", hash: "SHA-512" }, false, ["sign"]);
+  const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(await paystackKey()), { name: "HMAC", hash: "SHA-512" }, false, ["sign"]);
   const mac = new Uint8Array(await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(raw)));
   const hex = Array.from(mac, (b) => b.toString(16).padStart(2, "0")).join("");
   return timingSafeEqual(hex, signature);
