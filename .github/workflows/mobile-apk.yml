@@ -40,7 +40,13 @@ jobs:
       - run: flutter pub get
       - run: flutter analyze --no-fatal-infos
       - run: flutter test
-      - run: flutter build apk --release --dart-define=SUPABASE_URL=$SUPABASE_URL --dart-define=SUPABASE_KEY=$SUPABASE_PUBLIC_KEY
+      - name: Build APK
+        run: |
+          set -o pipefail
+          if ! flutter build apk --release --dart-define=SUPABASE_URL=$SUPABASE_URL --dart-define=SUPABASE_KEY=$SUPABASE_PUBLIC_KEY 2>&1 | tee build.log; then
+            grep -iE "error|what went wrong|failed|exception|> " build.log | grep -v "^ *at " | tail -25 | while IFS= read -r l; do echo "::error::$l"; done
+            exit 1
+          fi
       - run: cp build/app/outputs/flutter-apk/app-release.apk build/MyFlix.apk
       - uses: softprops/action-gh-release@v2
         with:

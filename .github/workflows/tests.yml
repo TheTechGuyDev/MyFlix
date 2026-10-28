@@ -34,7 +34,8 @@ jobs:
         run: |
           npm i --no-save playwright@1.56.1
           npx playwright install --with-deps chromium
-          node scripts/smoke.mjs web/out
+          set -o pipefail
+          node scripts/smoke.mjs web/out | tee smoke.log || { grep FAIL smoke.log | while IFS= read -r l; do echo "::error::$l"; done; exit 1; }
 
   app:
     runs-on: ubuntu-latest
