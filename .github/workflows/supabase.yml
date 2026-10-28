@@ -72,7 +72,13 @@ jobs:
         run: supabase link --project-ref "$REF" --password "$SUPABASE_DB_PASSWORD"
 
       - name: Apply database migrations
-        run: supabase db push --password "$SUPABASE_DB_PASSWORD" --include-all
+        run: |
+          set -o pipefail
+          if ! supabase db push --password "$SUPABASE_DB_PASSWORD" --include-all --yes 2>&1 | tee push.log; then
+            # Surface the database error as annotations (visible without downloading logs)
+            grep -iE "error|ERROR|failed|hint|detail|at statement" push.log | tail -15 | while read -r l; do echo "::error::$l"; done
+            exit 1
+          fi
 
       - name: Sync function secrets
         env:
