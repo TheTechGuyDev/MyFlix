@@ -12,6 +12,10 @@ expect "stopped stream stays stopped"                "stopped"
 expect "promo priced on server"                      '"amount": 20400'
 expect "other members' profiles hidden"              "bob_sees_profiles"
 expect "staff without two-step see only own account" "staff_aal1_accounts"
+expect "Live Now hidden from members"                "Not allowed"
+expect "admin can stop a stream"                     '^ +stopped$'
+expect "sign-ups switch blocks new accounts"         "New sign-ups are paused"
+if ! grep -A2 "invited_ok" "$out" | grep -qE "^ +1"; then echo "FAIL  invited staff blocked by sign-ups switch"; fail=1; fi
 if grep -A2 "bob_sees_profiles" "$out" | grep -qE "^ +[1-9]"; then echo "FAIL  Bob saw Ada's profiles"; fail=1; fi
 if grep -A2 "staff_aal1_accounts" "$out" | grep -qE "^ +[2-9]"; then echo "FAIL  staff without MFA saw members"; fail=1; fi
 if ! grep -A2 "staff_aal2_accounts" "$out" | grep -qE "^ +3"; then echo "FAIL  staff with MFA couldn't see members"; fail=1; fi

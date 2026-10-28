@@ -1,5 +1,5 @@
 // Supabase Auth "Send Email" hook: branded MyFlix emails for sign-up, sign-in codes, resets and changes.
-import { env, json } from "../_shared/cors.ts";
+import { json, site } from "../_shared/cors.ts";
 import { layout, sendEmail } from "../_shared/messages.ts";
 import { verifyHook } from "../_shared/webhook.ts";
 
@@ -7,8 +7,10 @@ Deno.serve(async (req) => {
   const raw = await req.text();
   if (!(await verifyHook(req, raw, "SEND_EMAIL_HOOK_SECRET"))) return new Response(JSON.stringify({ error: { http_code: 401, message: "bad signature" } }), { status: 401 });
   const { user, email_data: d } = JSON.parse(raw);
+  // Links open our own confirm page, which verifies the token there. This works on any device or browser,
+  // unlike the default link that only works in the browser that asked for it.
   const verify = (hash: string, type: string) =>
-    `${env("SUPABASE_URL")}/auth/v1/verify?token=${hash}&type=${type}&redirect_to=${encodeURIComponent(d.redirect_to || d.site_url)}`;
+    type === "invite" ? `${site()}/admin/login/?token_hash=${encodeURIComponent(hash)}&type=invite` : `${site()}/auth/confirm/?token_hash=${encodeURIComponent(hash)}&type=${type}`;
 
   const to = d.email_action_type === "email_change" && user.new_email ? user.new_email : user.email;
   let subject = "MyFlix";

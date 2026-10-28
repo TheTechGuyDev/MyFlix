@@ -8,8 +8,8 @@ import { Area, AreaChart, ResponsiveContainer, Tooltip, XAxis } from "recharts";
 import VideoUploader from "@/components/VideoUploader";
 import { Badge, Button, Card, CardTitle, Field, Input, Select, Stat, Tabs, Textarea, Toggle, statusTone, useToast } from "@/components/ui";
 import { GENRES, LANGS, chartTip, date, img, naira, num } from "@/lib/format";
-import { deleteMedia, imageToDataUrl, putMedia } from "@/lib/media";
-import { getDb, uid, upsert, useDb } from "@/lib/store";
+import { deleteSubtitle, srtToVtt, uploadArtwork, uploadSubtitle } from "@/lib/media";
+import { getDb, log, saveTitleNow, uid, useDb } from "@/lib/store";
 import type { Episode, Maturity, Season, Subtitle, Title, TitleStatus } from "@/lib/types";
 
 const SITE = process.env.NEXT_PUBLIC_SITE_URL ?? "/MyFlix/";
@@ -47,24 +47,6 @@ const blank = (): Title => ({
   updatedAt: new Date().toISOString(),
 });
 
-/** Same generator the web app uses for demo episodes, so seeded series show their episodes here. */
-function generatedSeasons(t: Title): Season[] {
-  return Array.from({ length: t.seasons ?? 1 }, (_, si) => {
-    const season = si + 1;
-    const count = 6 + ((t.title.length + season) % 4);
-    return {
-      number: season,
-      episodes: Array.from({ length: count }, (_, i) => ({
-        id: uid("ep"),
-        number: i + 1,
-        title: i === 0 ? "Pilot" : `Episode ${i + 1}`,
-        runtime: `${42 + ((i * 7 + season) % 15)}m`,
-        synopsis: i === 0 ? t.synopsis : `The stakes rise for everyone in ${t.title} as old loyalties are tested and a new secret comes to light.`,
-      })),
-    };
-  });
-}
-
 const slug = (s: string) => s.toLowerCase().replace(/&/g, "and").replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
 const comingLabel = (iso: string) => new Date(iso).toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short" }).replace(",", "");
 
@@ -74,6 +56,7 @@ function Editor() {
   const toast = useToast();
   const id = params.get("id");
   const existing = useDb((d) => (id ? d.titles.find((t) => t.id === id) : undefined));
+  const live = existing;
   const loaded = useDb((d) => d.titles.length > 0);
   const [t, setT] = useState<Title | null>(null);
   const [tab, setTab] = useState<TabId>("details");
@@ -84,7 +67,7 @@ function Editor() {
     if (!loaded || t) return;
     if (existing) {
       const copy = structuredClone(existing);
-      if (copy.type === "series" && !copy.seasonsData) copy.seasonsData = generatedSeasons(copy);
+      if (copy.type === "series" && !copy.seasonsData?.length) copy.seasonsData = [{ number: 1, episodes: [] }];
       setT(copy);
     } else setT(blank());
   }, [loaded, existing, t]);
@@ -101,7 +84,7 @@ function Editor() {
     setDirty(true);
   };
 
-  const save = (status?: TitleStatus) => {
+  const save = async (status?: TitleStatus, quiet = false): Promise<string | null> => {
     const e: Record<string, string> = {};
     if (!t.title.trim()) e.title = "Title is required.";
     if (!t.synopsis.trim()) e.synopsis = "Add a short synopsis.";
@@ -115,7 +98,7 @@ function Editor() {
       if (e.title || e.synopsis || e.genres) setTab("details");
       else if (e.image) setTab("artwork");
       else setTab("rights");
-      return;
+      return null;
     }
     const now = new Date().toISOString();
     let newId = t.id;
@@ -129,18 +112,30 @@ function Editor() {
       id: newId,
       status: st,
       seasons: t.type === "series" ? t.seasonsData?.length ?? 1 : undefined,
-      runtime: t.type === "movie" ? t.runtime || (t.video?.durationSec ? `${Math.floor(t.video.durationSec / 3600)}h ${Math.round((t.video.durationSec % 3600) / 60)}m` : "") : undefined,
+      seasonsData: t.type === "series" ? t.seasonsData ?? [{ number: 1, episodes: [] }] : undefined,
+      runtime: t.type === "movie" ? t.runtime || (live?.video?.duration ? `${Math.floor(live.video.duration / 3600)}h ${Math.round((live.video.duration % 3600) / 60)}m` : "") : undefined,
       comingSoon: scheduledFuture ? comingLabel(t.releaseAt!) : undefined,
-      quality: (t.video?.height ?? 2160) >= 2160 || t.video?.source === "url" ? "4K" : "HD",
+      quality: live?.video?.height ? (live.video.height >= 2160 ? "4K" : "HD") : t.quality,
       updatedAt: now,
       addedAt: t.addedAt || now,
     };
-    upsert("titles", final, t.id ? (st !== existing?.status ? `Set status to ${st}` : "Edited title") : "Created title", final.title);
+    if (st === "published" && !quiet) {
+      const hasVideo = final.type === "movie" ? live?.video?.status === "ready" : live?.seasonsData?.some((s) => s.episodes.some((e) => e.video?.status === "ready"));
+      if (!hasVideo && !final.sample && !confirm("This title has no ready video yet. Members will see it but can't play it. Publish anyway?")) return null;
+    }
+    const ok = await saveTitleNow(final);
+    if (!ok) {
+      toast("Couldn't save. Check your connection and try again.", "bad");
+      return null;
+    }
+    log(t.id ? (st !== existing?.status ? `Set status to ${st}` : "Edited title") : "Created title", final.title);
     setT(final);
     setDirty(false);
-    toast(st === "published" ? `"${final.title}" is live on MyFlix.` : st === "scheduled" ? `"${final.title}" scheduled for ${date(final.releaseAt)}.` : "Saved.");
+    if (!quiet) toast(st === "published" ? `"${final.title}" is live on MyFlix.` : st === "scheduled" ? `"${final.title}" scheduled for ${date(final.releaseAt)}.` : "Saved.");
     if (!t.id) router.replace(`/content/edit?id=${newId}`);
+    return newId;
   };
+  const ensureSaved = () => save(undefined, true);
 
   const tabs: { id: TabId; label: string }[] = [
     { id: "details", label: "Details" },
@@ -253,8 +248,8 @@ function Editor() {
 
       {tab === "video" && t.type === "movie" && (
         <Card>
-          <CardTitle title="Feature video" sub="Upload the master file (up to 4K). We encode it into an adaptive ladder from 480p up to the source resolution." />
-          <VideoUploader value={t.video} onChange={(video) => set({ video })} />
+          <CardTitle title="Feature video" sub="Upload the master file (up to 4K). Mux encodes it for adaptive streaming from 480p up to the source resolution." />
+          <VideoUploader titleId={t.id || undefined} value={live?.video} ensureSaved={ensureSaved} />
           <div className="mt-4 grid gap-4 sm:grid-cols-3">
             <Field label="Skip Intro starts (sec)"><Input type="number" value={t.introStart ?? ""} onChange={(e) => set({ introStart: e.target.value ? Number(e.target.value) : undefined })} /></Field>
             <Field label="Skip Intro ends (sec)"><Input type="number" value={t.introEnd ?? ""} onChange={(e) => set({ introEnd: e.target.value ? Number(e.target.value) : undefined })} /></Field>
@@ -262,9 +257,9 @@ function Editor() {
         </Card>
       )}
 
-      {tab === "video" && t.type === "series" && <SeasonsEditor seasons={t.seasonsData ?? []} onChange={(seasonsData) => set({ seasonsData })} />}
+      {tab === "video" && t.type === "series" && <SeasonsEditor titleId={t.id} live={live} seasons={t.seasonsData ?? []} onChange={(seasonsData) => set({ seasonsData })} ensureSaved={ensureSaved} />}
 
-      {tab === "tracks" && <TracksEditor t={t} set={set} />}
+      {tab === "tracks" && <TracksEditor t={t} set={set} assetId={live?.video?.asset_id} ensureSaved={ensureSaved} />}
 
       {tab === "rights" && (
         <div className="grid gap-4 lg:grid-cols-2">
@@ -413,11 +408,13 @@ function ArtworkCard({ label, hint, value, ratio, error, onChange }: { label: st
           const f = e.target.files?.[0];
           if (!f) return;
           try {
-            onChange(await imageToDataUrl(f, label.startsWith("Poster") ? 600 : 1280));
+            setErr("Uploading…");
+            onChange(await uploadArtwork(f, label.startsWith("Poster") ? 800 : 1920));
             setErr("");
-          } catch {
-            setErr("Couldn't read that image.");
+          } catch (x) {
+            setErr(x instanceof Error ? x.message : "Couldn't upload that image.");
           }
+          e.target.value = "";
         }}
       />
       <div className="mt-3 flex flex-wrap gap-2">
@@ -432,7 +429,8 @@ function ArtworkCard({ label, hint, value, ratio, error, onChange }: { label: st
   );
 }
 
-function SeasonsEditor({ seasons, onChange }: { seasons: Season[]; onChange: (s: Season[]) => void }) {
+function SeasonsEditor({ titleId, live, seasons, onChange, ensureSaved }: { titleId: string; live?: Title; seasons: Season[]; onChange: (s: Season[]) => void; ensureSaved: () => Promise<string | null> }) {
+  const liveVideo = (epId: string) => live?.seasonsData?.flatMap((x) => x.episodes).find((e) => e.id === epId)?.video;
   const [active, setActive] = useState(seasons[0]?.number ?? 1);
   const s = seasons.find((x) => x.number === active);
   const update = (sn: Season) => onChange(seasons.map((x) => (x.number === sn.number ? sn : x)));
@@ -449,7 +447,7 @@ function SeasonsEditor({ seasons, onChange }: { seasons: Season[]; onChange: (s:
   const setEp = (ep: Episode) => s && update({ ...s, episodes: s.episodes.map((e) => (e.id === ep.id ? ep : e)) });
   const delEp = (ep: Episode) => {
     if (!s) return;
-    if (ep.video?.mediaId) deleteMedia(ep.video.mediaId);
+    if (liveVideo(ep.id) && !confirm(`Delete episode ${ep.number} and its video? This happens when you save.`)) return;
     update({ ...s, episodes: s.episodes.filter((e) => e.id !== ep.id).map((e, i) => ({ ...e, number: i + 1 })) });
   };
 
@@ -485,7 +483,7 @@ function SeasonsEditor({ seasons, onChange }: { seasons: Season[]; onChange: (s:
                   <Input type="number" value={ep.introEnd ?? ""} onChange={(e) => setEp({ ...ep, introEnd: e.target.value ? Number(e.target.value) : undefined })} placeholder="Intro end (sec)" aria-label="Intro end" />
                 </div>
               </div>
-              <VideoUploader compact value={ep.video} onChange={(video) => setEp({ ...ep, video })} />
+              <VideoUploader compact titleId={titleId || undefined} episodeId={ep.id} value={liveVideo(ep.id)} ensureSaved={ensureSaved} />
               <button onClick={() => delEp(ep)} className="self-start rounded-lg p-2 text-danger hover:bg-rose-500/10" title="Delete episode"><Trash2 size={16} /></button>
             </div>
           ))}
@@ -496,12 +494,8 @@ function SeasonsEditor({ seasons, onChange }: { seasons: Season[]; onChange: (s:
   );
 }
 
-function srtToVtt(text: string) {
-  if (text.trimStart().startsWith("WEBVTT")) return text;
-  return "WEBVTT\n\n" + text.replace(/\r/g, "").replace(/(\d{2}:\d{2}:\d{2}),(\d{3})/g, "$1.$2");
-}
-
-function TracksEditor({ t, set }: { t: Title; set: (p: Partial<Title>) => void }) {
+function TracksEditor({ t, set, assetId, ensureSaved }: { t: Title; set: (p: Partial<Title>) => void; assetId?: string; ensureSaved: () => Promise<string | null> }) {
+  const [busy, setBusy] = useState(false);
   const ref = useRef<HTMLInputElement>(null);
   const [lang, setLang] = useState("en");
   const [aLang, setALang] = useState("yo");
@@ -518,10 +512,10 @@ function TracksEditor({ t, set }: { t: Title; set: (p: Partial<Title>) => void }
           {subs.map((s) => (
             <li key={s.id} className="flex items-center gap-3 rounded-xl bg-slate-900/5 px-3 py-2 text-sm dark:bg-white/5">
               <span className="flex-1 font-semibold">{s.label}</span>
-              <Badge tone={s.mediaId ? "ok" : "muted"}>{s.mediaId ? "File uploaded" : "Auto / pending file"}</Badge>
+              <Badge tone={s.url ? "ok" : "muted"}>{s.url ? "File uploaded" : "Pending file"}</Badge>
               <button
                 onClick={() => {
-                  if (s.mediaId) deleteMedia(s.mediaId);
+                  void deleteSubtitle(s.url);
                   set({ subtitles: subs.filter((x) => x.id !== s.id) });
                 }}
                 className="text-danger"
@@ -537,7 +531,7 @@ function TracksEditor({ t, set }: { t: Title; set: (p: Partial<Title>) => void }
           <Select value={lang} onChange={(e) => setLang(e.target.value)} aria-label="Subtitle language">
             {LANGS.map((l) => <option key={l.code} value={l.code}>{l.label}</option>)}
           </Select>
-          <Button onClick={() => ref.current?.click()} icon={<Plus size={15} />}>Upload file</Button>
+          <Button onClick={() => ref.current?.click()} disabled={busy} icon={<Plus size={15} />}>{busy ? "Uploading…" : "Upload file"}</Button>
         </div>
         <input
           ref={ref}
@@ -547,14 +541,23 @@ function TracksEditor({ t, set }: { t: Title; set: (p: Partial<Title>) => void }
           onChange={async (e) => {
             const f = e.target.files?.[0];
             if (!f) return;
-            const text = srtToVtt(await f.text());
-            const id = uid("sub-");
-            await putMedia(id, new Blob([text], { type: "text/vtt" }));
-            const label = LANGS.find((l) => l.code === lang)!.label;
-            const next: Subtitle[] = [...subs.filter((x) => x.lang !== lang), { id, lang, label, mediaId: id }];
-            set({ subtitles: next });
-            toast(`${label} subtitles added.`);
             e.target.value = "";
+            setBusy(true);
+            try {
+              const tid = t.id || (await ensureSaved());
+              if (!tid) throw new Error("Fill in and save the title details first.");
+              const label = LANGS.find((l) => l.code === lang)!.label;
+              const url = await uploadSubtitle(tid, lang, label, srtToVtt(await f.text()), assetId);
+              const old = subs.find((x) => x.lang === lang);
+              if (old) void deleteSubtitle(old.url);
+              const next: Subtitle[] = [...subs.filter((x) => x.lang !== lang), { id: uid("sub-"), lang, label, url }];
+              set({ subtitles: next });
+              toast(`${label} subtitles added. Save the title to publish them.`);
+            } catch (x) {
+              toast(x instanceof Error ? x.message : "Couldn't upload subtitles.", "bad");
+            } finally {
+              setBusy(false);
+            }
           }}
         />
       </Card>

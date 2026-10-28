@@ -14,7 +14,7 @@ const tip = { contentStyle: { borderRadius: 12, border: "none", boxShadow: "0 8p
 export default function OverviewPage() {
   const d = useDb((x) => x);
   const staff = currentStaff(d);
-  if (!d.titles.length) return null;
+  if (!d.ready) return null;
   const o = overview(d);
   const processing = d.titles.filter((t) => t.video && videoState(t.video).tone === "warn");
   const openTickets = d.tickets.filter((t) => t.status !== "resolved");
@@ -34,10 +34,10 @@ export default function OverviewPage() {
       />
 
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-        <Stat label="Active members" value={num(o.active.length)} delta={o.newDelta} icon={<Users size={20} />} />
+        <Stat label="Active members" value={num(o.activeCount)} hint={`${num(o.new30)} new in 30 days`} icon={<Users size={20} />} />
         <Stat label="Monthly recurring revenue" value={nairaShort(o.mrr)} hint={`ARPU ${naira(o.arpu)}`} icon={<Wallet size={20} />} />
         <Stat label="Revenue (30 days)" value={nairaShort(o.rev30)} delta={o.revDelta} icon={<TrendingUp size={20} />} />
-        <Stat label="Watch hours" value={num(o.watchHours)} hint={`Churn ${pct(o.churn)} / month`} icon={<Clock size={20} />} />
+        <Stat label="Watch hours (30 days)" value={num(o.watchHours)} hint={`Churn ${pct(o.churn)} in 30 days`} icon={<Clock size={20} />} />
       </div>
 
       <div className="grid gap-4 xl:grid-cols-3">
@@ -105,13 +105,14 @@ export default function OverviewPage() {
         <Card>
           <CardTitle title="Needs attention" />
           <ul className="space-y-3 text-sm">
-            <Alert href="/payments?status=failed" icon={<CreditCard size={16} />} tone="bad" text={`${o.failed30.length} failed payments in the last 30 days`} />
+            <Alert href="/payments?status=failed" icon={<CreditCard size={16} />} tone="bad" text={`${o.failed30} failed payments in the last 30 days`} />
             <Alert href="/support" icon={<AlertTriangle size={16} />} tone="warn" text={`${openTickets.length} open support tickets`} />
             <Alert href="/content?licence=expiring" icon={<Film size={16} />} tone="warn" text={`${o.expiring.length} licences expire within 60 days`} />
             <Alert href="/uploads" icon={<Clock size={16} />} tone="info" text={`${processing.length} videos processing`} />
           </ul>
           <div className="mt-5">
             <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Top states</p>
+            {o.byState.length === 0 && <p className="text-sm text-slate-500">Members&apos; states show here once they sign up.</p>}
             {o.byState.slice(0, 5).map((s) => (
               <div key={s.state} className="mb-1.5 flex items-center gap-2 text-sm">
                 <span className="w-24 truncate">{s.state}</span>
@@ -127,8 +128,9 @@ export default function OverviewPage() {
 
       <div className="grid gap-4 xl:grid-cols-3">
         <Card className="xl:col-span-2" pad={false}>
-          <div className="p-5 pb-0"><CardTitle title="Top titles" sub="By total views" right={<Link href="/content" className="text-sm font-semibold text-brand">View library</Link>} /></div>
-          <Table head={["Title", "Type", "Views", "Watch hours", "Completion"]} minW={560}>
+          <div className="p-5 pb-0"><CardTitle title="Top titles" sub="Most played in the last 30 days" right={<Link href="/content" className="text-sm font-semibold text-brand">View library</Link>} /></div>
+          {o.topTitles.length === 0 && <p className="px-5 pb-5 text-sm text-slate-500">Nothing watched yet. Top titles appear here once members start streaming.</p>}
+          {o.topTitles.length > 0 && <Table head={["Title", "Type", "Plays (30 days)", "All-time views"]} minW={560}>
             {o.topTitles.map((t, i) => (
               <tr key={t.id} className="hover:bg-white/40 dark:hover:bg-white/5">
                 <Td>
@@ -140,12 +142,11 @@ export default function OverviewPage() {
                   </Link>
                 </Td>
                 <Td><Badge>{t.type}</Badge></Td>
+                <Td>{num(t.plays)}</Td>
                 <Td>{num(t.stats.views)}</Td>
-                <Td>{num(t.stats.watchHours)}</Td>
-                <Td>{t.stats.completion}%</Td>
               </tr>
             ))}
-          </Table>
+          </Table>}
         </Card>
         <Card>
           <CardTitle title="Recent activity" right={<Link href="/audit" className="text-sm font-semibold text-brand">Audit log</Link>} />

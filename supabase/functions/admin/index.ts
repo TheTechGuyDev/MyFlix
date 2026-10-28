@@ -2,7 +2,7 @@
 // (with two-step sign-in) and is written to the audit log.
 import { env, fail, HttpError, json, serve, site } from "../_shared/cors.ts";
 import { admin, audit, requireStaff, requireUser } from "../_shared/supabase.ts";
-import { paystack } from "../_shared/paystack.ts";
+import { applyPayment, paystack } from "../_shared/paystack.ts";
 import { layout, sendEmail } from "../_shared/messages.ts";
 
 serve(async (req) => {
@@ -33,7 +33,7 @@ serve(async (req) => {
     const { data: existing } = await admin.from("accounts").select("id").eq("email", email).maybeSingle();
     if (existing) uid = existing.id;
     else {
-      const { data, error } = await admin.auth.admin.inviteUserByEmail(email, { redirectTo: `${site()}/admin/login/` });
+      const { data, error } = await admin.auth.admin.inviteUserByEmail(email, { redirectTo: `${site()}/admin/login/?invite=1` });
       if (error) throw new HttpError(400, error.message);
       uid = data.user.id;
     }
@@ -84,6 +84,19 @@ serve(async (req) => {
     if (b.end_access) await admin.from("accounts").update({ status: "cancelled", paid_until: new Date().toISOString(), cancel_at: new Date().toISOString() }).eq("id", pay.account_id);
     await audit(user.id, name, "Refunded payment", `${pay.reference} (₦${amount})`);
     return json({ ok: true });
+  }
+
+  if (b.action === "verify_payment") {
+    // Re-checks a pending or failed payment with Paystack (e.g. a bank transfer that landed late)
+    const { user, name } = await requireStaff(req, "payments");
+    const { data: pay } = await admin.from("payments").select("id, reference, status").eq("id", b.payment_id).single();
+    if (!pay) throw new HttpError(404, "Payment not found.");
+    if (pay.status === "success") return json({ status: "success" });
+    const tx = await paystack(`/transaction/verify/${encodeURIComponent(pay.reference)}`);
+    const r = await applyPayment(tx);
+    if (!r.ok && ["failed", "abandoned"].includes(tx.status)) await admin.from("payments").update({ status: tx.status }).eq("id", pay.id);
+    await audit(user.id, name, "Checked payment with Paystack", `${pay.reference}: ${tx.status}`);
+    return json({ status: r.ok ? "success" : tx.status, message: tx.gateway_response });
   }
 
   return fail("Unknown action.");

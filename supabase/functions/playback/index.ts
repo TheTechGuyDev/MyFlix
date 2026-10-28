@@ -1,6 +1,6 @@
 // Members: checks membership + screen limit, then returns short-lived signed stream URLs.
 import { env, HttpError, json, serve } from "../_shared/cors.ts";
-import { admin, asUser, requireUser } from "../_shared/supabase.ts";
+import { admin, asUser, requireUser, settings } from "../_shared/supabase.ts";
 import { resolutionFor, signPlayback } from "../_shared/mux.ts";
 
 serve(async (req) => {
@@ -9,6 +9,8 @@ serve(async (req) => {
   const titleId = String(b.title_id ?? "");
   const streamId = String(b.stream_id ?? "");
   if (!titleId || !streamId) throw new HttpError(400, "Missing title.");
+  const cfg = await settings();
+  if (cfg.maintenance === true) throw new HttpError(503, String(cfg.maintenanceMessage || "MyFlix is getting an upgrade. We'll be back shortly."));
 
   // Membership, suspension, profile ownership and screen limit (also used as the heartbeat)
   const { data: claim, error } = await asUser(req).rpc("claim_stream", { p_id: streamId, p_profile: b.profile_id, p_device: String(b.device ?? "Browser"), p_title: titleId });

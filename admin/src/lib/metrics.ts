@@ -1,5 +1,4 @@
 import type { Db } from "./store";
-import { allMembers } from "./store";
 
 const DAY = 864e5;
 
@@ -14,96 +13,100 @@ export function monthKeys(n = 12) {
   return out;
 }
 
+const within = (iso: string | undefined, from: number, to: number) => {
+  if (!iso) return false;
+  const t = new Date(iso).getTime();
+  return t >= from && t < to;
+};
+const change = (now: number, prev: number) => (prev ? ((now - prev) / prev) * 100 : 0);
+
+/** Headline business numbers, all from real database records (admin_stats + loaded tables). */
 export function overview(d: Db) {
-  const members = allMembers(d);
-  const active = members.filter((m) => m.status === "active" || m.status === "trial");
-  const price = (id: string) => d.plans.find((p) => p.id === id)?.price ?? 0;
-  const mrr = active.reduce((a, m) => a + price(m.planId), 0);
+  const s = d.stats;
   const now = Date.now();
-  const inRange = (iso: string, from: number, to: number) => {
-    const t = new Date(iso).getTime();
-    return t >= from && t < to;
-  };
-  const ok = d.txns.filter((t) => t.status === "success");
-  const rev30 = ok.filter((t) => inRange(t.at, now - 30 * DAY, now)).reduce((a, t) => a + t.amount, 0);
-  const revPrev = ok.filter((t) => inRange(t.at, now - 60 * DAY, now - 30 * DAY)).reduce((a, t) => a + t.amount, 0);
-  const new30 = members.filter((m) => inRange(m.joinedAt, now - 30 * DAY, now)).length;
-  const newPrev = members.filter((m) => inRange(m.joinedAt, now - 60 * DAY, now - 30 * DAY)).length;
-  const cancelled = members.filter((m) => m.status === "cancelled").length;
-  const churn = members.length ? (cancelled / members.length) * 100 * (30 / 365) * 4 : 0;
-  const watchHours = d.titles.reduce((a, t) => a + t.stats.watchHours, 0);
-  const failed30 = d.txns.filter((t) => t.status === "failed" && inRange(t.at, now - 30 * DAY, now));
+  const members = d.members;
+  const hasAccess = (m: (typeof members)[number]) => m.status !== "suspended" && Boolean(m.paidUntil && new Date(m.paidUntil).getTime() > now);
+  const activeCount = s?.members_active ?? members.filter(hasAccess).length;
+  const mrr = s?.mrr ?? 0;
+  const ok = d.txns.filter((t) => t.status === "success" && t.kind !== "card_update");
+  const rev30 = s?.revenue_period ?? ok.filter((t) => within(t.at, now - 30 * DAY, now)).reduce((a, t) => a + t.amount, 0);
+  const new30 = s?.signups_period ?? members.filter((m) => within(m.joinedAt, now - 30 * DAY, now)).length;
+  const churned = s?.churned_period ?? 0;
+  const churn = activeCount + churned ? (churned / (activeCount + churned)) * 100 : 0;
 
   const months = monthKeys(12).map((m) => ({
     label: m.label,
-    revenue: ok.filter((t) => inRange(t.at, m.start.getTime(), m.end.getTime())).reduce((a, t) => a + t.amount, 0),
-    signups: members.filter((x) => inRange(x.joinedAt, m.start.getTime(), m.end.getTime())).length,
-    cancels: Math.round(members.filter((x) => x.status === "cancelled" && inRange(x.joinedAt, m.start.getTime() - 60 * DAY, m.end.getTime() - 60 * DAY)).length * 0.8),
+    revenue: ok.filter((t) => within(t.at, m.start.getTime(), m.end.getTime())).reduce((a, t) => a + t.amount, 0),
+    signups: members.filter((x) => within(x.joinedAt, m.start.getTime(), m.end.getTime())).length,
+    cancels: members.filter((x) => x.cancelAt && within(x.cancelAt, m.start.getTime(), Math.min(m.end.getTime(), now))).length,
   }));
 
-  const planMix = d.plans.map((p) => ({ name: p.name, id: p.id, value: active.filter((m) => m.planId === p.id).length, price: p.price }));
-  const methodMix = (["card", "transfer", "ussd"] as const).map((k) => ({ name: k === "card" ? "Card" : k === "transfer" ? "Transfer" : "USSD", value: active.filter((m) => m.method === k).length }));
-  const byState = Object.entries(members.reduce<Record<string, number>>((a, m) => ((a[m.state] = (a[m.state] ?? 0) + 1), a), {}))
+  const planMix = d.plans.map((p) => ({ name: p.name, id: p.id, value: s?.plan_mix?.[p.id] ?? 0, price: p.price }));
+  const channelName: Record<string, string> = { card: "Card", bank_transfer: "Bank transfer", ussd: "USSD", bank: "Bank account", credit: "Credit / promo", mobile_money: "Mobile money" };
+  const methodMix = Object.entries(s?.payment_channels ?? {}).map(([k, v]) => ({ name: channelName[k] ?? k, value: v }));
+  const byState = Object.entries(s?.by_state ?? {})
     .map(([state, count]) => ({ state, count }))
     .sort((a, b) => b.count - a.count);
 
-  const topTitles = [...d.titles].filter((t) => t.status === "published").sort((a, b) => b.stats.views - a.stats.views).slice(0, 8);
+  const plays = new Map((s?.top_titles ?? []).map((t) => [t.id, t.plays]));
+  const topTitles = d.titles
+    .filter((t) => plays.has(t.id))
+    .map((t) => ({ ...t, plays: plays.get(t.id) ?? 0 }))
+    .sort((a, b) => b.plays - a.plays);
   const expiring = d.titles.filter((t) => t.licence?.expires && new Date(t.licence.expires).getTime() - now < 60 * DAY);
 
   return {
-    members, active, mrr, rev30, revDelta: revPrev ? ((rev30 - revPrev) / revPrev) * 100 : 0, new30, newDelta: newPrev ? ((new30 - newPrev) / newPrev) * 100 : 0,
-    churn, watchHours, failed30, months, planMix, methodMix, byState, topTitles, expiring,
-    arpu: active.length ? mrr / active.length : 0,
+    activeCount,
+    mrr,
+    rev30,
+    revDelta: change(rev30, s?.revenue_prev ?? 0),
+    new30,
+    newDelta: change(new30, s?.signups_prev ?? 0),
+    churn,
+    watchHours: s?.watch_hours_period ?? 0,
+    failed30: s?.failed_period ?? d.txns.filter((t) => t.status === "failed" && within(t.at, now - 30 * DAY, now)).length,
+    months,
+    planMix,
+    methodMix,
+    byState,
+    topTitles,
+    expiring,
+    arpu: activeCount ? mrr / activeCount : 0,
   };
 }
 
-/** Hourly viewing pattern (Nigeria evenings peak) for the heatmap. */
-export function hourly() {
+/** Plays by weekday and hour (Nigerian time), from real viewing history. */
+export function hourly(d: Db) {
   const days = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
-  return days.map((day, di) => ({
+  const cells = d.stats?.hourly ?? [];
+  return days.map((day, i) => ({
     day,
-    hours: Array.from({ length: 24 }, (_, h) => {
-      const evening = Math.exp(-((h - 21) ** 2) / 8);
-      const lunch = 0.35 * Math.exp(-((h - 13) ** 2) / 4);
-      const weekend = di >= 5 ? 1.35 : di === 4 ? 1.15 : 1;
-      const late = h < 2 ? 0.5 : 0;
-      return Math.round((evening + lunch + late + 0.05) * weekend * 100);
-    }),
+    hours: Array.from({ length: 24 }, (_, h) => cells.find((c) => c.dow === i + 1 && c.hour === h)?.n ?? 0),
   }));
 }
 
-export function deviceSplit() {
-  return [
-    { name: "Android phone", value: 46 },
-    { name: "Smart TV", value: 21 },
-    { name: "Web", value: 15 },
-    { name: "iPhone", value: 12 },
-    { name: "Tablet", value: 6 },
-  ];
+export function deviceSplit(d: Db) {
+  const names: Record<string, string> = { web: "Web browser", android: "Android", ios: "iPhone / iPad", tv: "Smart TV" };
+  return Object.entries(d.stats?.device_kinds ?? {}).map(([k, v]) => ({ name: names[k] ?? k, value: v }));
 }
 
-export function qualitySplit() {
-  return [
-    { name: "Data Saver (480p)", value: 31 },
-    { name: "HD (720p)", value: 29 },
-    { name: "Full HD (1080p)", value: 27 },
-    { name: "4K", value: 13 },
-  ];
+/** Quality cap members stream at, from their plans. */
+export function qualitySplit(d: Db) {
+  return d.plans.map((p) => ({ name: `${p.name} (${p.resolution})`, value: d.stats?.plan_mix?.[p.id] ?? 0 })).filter((x) => x.value > 0);
 }
 
+/** For each of the last 6 months' sign-ups: how many paid, and how many still have access today. */
 export function cohorts(d: Db) {
-  const members = allMembers(d);
-  return monthKeys(6).map((m, i) => {
-    const joined = members.filter((x) => {
-      const t = new Date(x.joinedAt).getTime();
-      return t >= m.start.getTime() && t < m.end.getTime();
-    });
-    const base = joined.length || 1;
-    const retained = joined.filter((x) => x.status === "active").length / base;
+  const now = Date.now();
+  return monthKeys(6).map((m) => {
+    const joined = d.members.filter((x) => within(x.joinedAt, m.start.getTime(), m.end.getTime()));
+    const paid = joined.filter((x) => x.paidUntil);
+    const still = paid.filter((x) => x.status !== "suspended" && new Date(x.paidUntil!).getTime() > now);
     return {
       label: m.label,
       size: joined.length,
-      months: Array.from({ length: 6 - i }, (_, k) => Math.round(100 * Math.max(retained, 1 - (k * (1 - retained)) / Math.max(1, 5 - i)))),
+      paidPct: joined.length ? Math.round((paid.length / joined.length) * 100) : 0,
+      retainedPct: paid.length ? Math.round((still.length / paid.length) * 100) : 0,
     };
   });
 }

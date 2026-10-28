@@ -1,25 +1,25 @@
 export type Maturity = "All" | "7+" | "13+" | "16+" | "18+";
 export type TitleStatus = "published" | "draft" | "scheduled" | "archived";
-export type RenditionLabel = "480p" | "720p" | "1080p" | "1440p" | "2160p";
 
-export type Rendition = { label: RenditionLabel; height: number; bitrateKbps: number; durationSec: number };
 
-/** A video attached to a movie or an episode. */
+/** A video hosted on Mux, attached to a movie or an episode. */
 export type VideoAsset = {
-  source: "upload" | "url";
-  url?: string; // HLS (.m3u8) or MP4 when source = url
-  mediaId?: string; // IndexedDB key when source = upload
+  provider: "mux";
+  upload_id?: string;
+  asset_id?: string;
+  playback_id?: string;
+  policy?: "signed" | "public";
+  status: "uploading" | "processing" | "ready" | "error";
+  height?: number;
+  duration?: number;
+  tier?: string;
+  mp4?: boolean;
   fileName?: string;
   sizeMB?: number;
-  width?: number;
-  height?: number;
-  durationSec?: number;
-  uploadedAt: string;
-  processingStartedAt: string;
-  renditions: Rendition[];
+  updated_at?: string;
 };
 
-export type Subtitle = { id: string; lang: string; label: string; mediaId?: string; url?: string };
+export type Subtitle = { id: string; lang: string; label: string; url?: string };
 export type AudioTrack = { id: string; lang: string; label: string; description?: boolean };
 
 export type Episode = {
@@ -68,6 +68,7 @@ export type Title = {
   introEnd?: number;
   licence?: { owner: string; type: "Original" | "Licensed" | "Co-production"; expires?: string; cost?: number };
   stats: { views: number; watchHours: number; completion: number; likes: number; trend: number[] };
+  sample?: boolean;
   addedAt: string;
   updatedAt: string;
 };
@@ -87,7 +88,7 @@ export type Plan = {
   annualDiscount?: number;
 };
 
-export type SubStatus = "active" | "cancelled" | "past_due" | "suspended" | "trial";
+export type SubStatus = "active" | "cancelled" | "past_due" | "suspended" | "trial" | "pending";
 
 export type Member = {
   id: string;
@@ -99,13 +100,18 @@ export type Member = {
   status: SubStatus;
   joinedAt: string;
   renewsAt: string;
-  method: "card" | "transfer" | "ussd";
+  method: "card" | "transfer" | "ussd" | "bank" | "credit";
   last4?: string;
   profiles: { name: string; kids: boolean }[];
+  paidUntil?: string;
+  cancelAt?: string;
+  credit?: number;
+  billingCycle?: string;
+  referralCode?: string;
+  referredBy?: string;
   devices: number;
   watchHours: number;
   lastActive: string;
-  source?: "web" | "demo";
   notes?: string;
 };
 
@@ -116,8 +122,9 @@ export type Txn = {
   email: string;
   amount: number;
   planId: string;
-  method: "card" | "transfer" | "ussd";
-  status: "success" | "failed" | "refunded" | "pending";
+  method: "card" | "transfer" | "ussd" | "bank" | "credit";
+  status: "success" | "failed" | "refunded" | "pending" | "abandoned";
+  kind?: string;
   at: string;
   reference: string;
 };
@@ -133,9 +140,11 @@ export type Promo = {
   expiresAt?: string;
   active: boolean;
   createdAt: string;
+  label?: string;
+  firstPaymentOnly?: boolean;
 };
 
-export type GiftCard = { id: string; code: string; amount: number; balance: number; createdAt: string; redeemedBy?: string };
+export type GiftCard = { id: string; code: string; amount: number; balance: number; createdAt: string; redeemedBy?: string; redeemedAt?: string; note?: string };
 
 export type Campaign = {
   id: string;
@@ -145,7 +154,7 @@ export type Campaign = {
   subject: string;
   body: string;
   titleId?: string;
-  status: "draft" | "scheduled" | "sent";
+  status: "draft" | "scheduled" | "sending" | "sent" | "failed";
   scheduledAt?: string;
   sentAt?: string;
   reach: number;
@@ -154,7 +163,7 @@ export type Campaign = {
   createdAt: string;
 };
 
-export type TicketMsg = { from: "member" | "staff"; author: string; body: string; at: string };
+export type TicketMsg = { id?: number; from: "member" | "staff"; author: string; body: string; at: string; internal?: boolean };
 export type Ticket = {
   id: string;
   subject: string;
@@ -192,7 +201,6 @@ export type Staff = {
   id: string;
   name: string;
   email: string;
-  passwordHash: string;
   roleId: string;
   active: boolean;
   lastLogin?: string;
@@ -237,6 +245,38 @@ export type Settings = {
   streamLimitEnforced: boolean;
   geoRestrictNigeria: boolean;
   announcement: string;
+  supportWhatsapp: string;
+  smsEnabled: boolean;
+  emailCodesEnabled: boolean;
+  staffSessionMinutes: number;
+};
+
+export type AdminStats = {
+  members_total: number;
+  members_active: number;
+  members_pending: number;
+  members_suspended: number;
+  cancelling: number;
+  churned_period: number;
+  signups_period: number;
+  mrr: number;
+  revenue_period: number;
+  refunds_period: number;
+  plan_mix: Record<string, number>;
+  signups_daily: { day: string; n: number }[];
+  revenue_daily: { day: string; amount: number }[];
+  watch_hours_period: number;
+  watch_daily: { day: string; hours: number }[];
+  top_titles: { id: string; plays: number }[];
+  payment_channels: Record<string, number>;
+  streams_live: number;
+  tickets_open: number;
+  hourly: { dow: number; hour: number; n: number }[];
+  device_kinds: Record<string, number>;
+  by_state: Record<string, number>;
+  failed_period: number;
+  revenue_prev: number;
+  signups_prev: number;
 };
 
 export type Notice = { id: string; at: string; kind: "info" | "warn" | "success"; text: string; read: boolean };

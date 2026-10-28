@@ -1,6 +1,6 @@
 // Starts and confirms Paystack payments. Prices are always calculated on the server (price_quote).
 import { fail, HttpError, json, serve, site } from "../_shared/cors.ts";
-import { admin, requireUser } from "../_shared/supabase.ts";
+import { admin, requireUser, settings } from "../_shared/supabase.ts";
 import { applyPayment, paystack } from "../_shared/paystack.ts";
 
 serve(async (req) => {
@@ -40,6 +40,7 @@ serve(async (req) => {
       return json({ done: true, reference });
     }
 
+    const cfg = await settings();
     const callback = String(body.callback_url ?? `${site()}/signup/payment/`);
     const tx = await paystack("/transaction/initialize", {
       email: acc.email,
@@ -47,7 +48,7 @@ serve(async (req) => {
       currency: "NGN",
       reference,
       callback_url: callback,
-      channels: ["card", "bank_transfer", "ussd", "bank"],
+      channels: ["card", ...(cfg.transferEnabled === false ? [] : ["bank_transfer", "bank"]), ...(cfg.ussdEnabled === false ? [] : ["ussd"])],
       metadata: { account_id: user.id, plan, cycle, custom_fields: [{ display_name: "Plan", variable_name: "plan", value: `${plan} (${cycle})` }] },
     });
     return json({ authorization_url: tx.authorization_url, access_code: tx.access_code, reference, amount: q.amount });

@@ -57,5 +57,18 @@ select set_config('request.jwt.claims', '{"aal":"aal2"}', false);
 select count(*) staff_aal2_accounts from accounts; select count(*) titles_staff from titles;
 update accounts set status='suspended' where email='bob@test.com';
 select (admin_stats(30))->>'members_active' as active, (admin_stats(30))->>'mrr' as mrr;
+select jsonb_array_length((admin_live())->'streams') as live_streams_staff;
+select admin_stop_stream('s2');
+\echo -- member can't see Live Now (expect error)
+select set_config('request.jwt.claim.sub', '11111111-1111-1111-1111-111111111111', false);
+select admin_live();
+select claim_stream('s2', :'id', 'Phone', 'eko-nights')->>'reason' as s2_after_admin_stop;
 reset role;
+
+\echo -- sign-ups paused: a new account is refused, an invited one is allowed
+update site_settings set data = data || '{"signupsOpen": false}' where id = 1;
+insert into auth.users (id, email) values ('44444444-4444-4444-4444-444444444444', 'late@test.com');
+insert into auth.users (id, email, invited_at) values ('55555555-5555-5555-5555-555555555555', 'newstaff@test.com', now());
+select count(*) as invited_ok from accounts where email = 'newstaff@test.com';
+update site_settings set data = data || '{"signupsOpen": true}' where id = 1;
 select email, status from accounts order by email;

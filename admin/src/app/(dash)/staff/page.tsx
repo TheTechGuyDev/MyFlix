@@ -4,10 +4,9 @@ import { Plus } from "lucide-react";
 import { useState } from "react";
 import { NAV } from "@/components/Shell";
 import { Avatar, Badge, Button, Card, CardTitle, Field, Input, Modal, PageHeader, Select, Table, Tabs, Td, useToast } from "@/components/ui";
-import { DEMO_PASSWORD } from "@/lib/seed";
 import { date } from "@/lib/format";
-import { currentStaff, sha, uid, upsert, useDb } from "@/lib/store";
-import type { Role, Section, Staff } from "@/lib/types";
+import { adminAction, currentStaff, uid, upsert, useDb } from "@/lib/store";
+import type { Role, Section } from "@/lib/types";
 
 export default function StaffPage() {
   const staff = useDb((d) => d.staff);
@@ -17,6 +16,16 @@ export default function StaffPage() {
   const [tab, setTab] = useState<"staff" | "roles">("staff");
   const [invite, setInvite] = useState<{ name: string; email: string; roleId: string } | null>(null);
   const [newRole, setNewRole] = useState("");
+  const [sending, setSending] = useState(false);
+  const resetMfa = async (id: string, email: string) => {
+    if (!confirm(`Reset two-step sign-in for ${email}? They'll set it up again with a new authenticator on their next sign-in.`)) return;
+    try {
+      await adminAction("reset_staff_mfa", { user_id: id });
+      toast("Two-step sign-in reset.");
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Couldn't reset.", "bad");
+    }
+  };
 
   const togglePerm = (r: Role, s: Section) => {
     if (r.system) return;
@@ -30,7 +39,7 @@ export default function StaffPage() {
       <Tabs tabs={[{ id: "staff", label: "Staff", count: staff.length }, { id: "roles", label: "Roles & permissions", count: roles.length }]} value={tab} onChange={setTab} />
       {tab === "staff" && (
         <Card pad={false}>
-          <div className="flex justify-end p-4 pb-0"><Button icon={<Plus size={15} />} onClick={() => setInvite({ name: "", email: "", roleId: "content_manager" })}>Add staff</Button></div>
+          <div className="flex justify-end p-4 pb-0"><Button icon={<Plus size={15} />} onClick={() => setInvite({ name: "", email: "", roleId: roles.find((r) => !r.system)?.id ?? roles[0]?.id ?? "" })}>Add staff</Button></div>
           <Table head={["Name", "Role", "Status", "Last sign-in", "Added", ""]} minW={760}>
             {staff.map((s) => (
               <tr key={s.id}>
@@ -50,9 +59,12 @@ export default function StaffPage() {
                 <Td className="text-xs text-slate-500">{date(s.createdAt)}</Td>
                 <Td>
                   {s.id !== me?.id && (
-                    <Button size="sm" variant="ghost" onClick={() => { upsert("staff", { ...s, active: !s.active }, s.active ? "Deactivated staff" : "Reactivated staff", s.email); toast(s.active ? "Access removed." : "Access restored."); }}>
-                      {s.active ? "Deactivate" : "Reactivate"}
-                    </Button>
+                    <span className="flex gap-1">
+                      <Button size="sm" variant="ghost" onClick={() => resetMfa(s.id, s.email)}>Reset two-step</Button>
+                      <Button size="sm" variant="ghost" onClick={() => { upsert("staff", { ...s, active: !s.active }, s.active ? "Deactivated staff" : "Reactivated staff", s.email); toast(s.active ? "Access removed." : "Access restored."); }}>
+                        {s.active ? "Deactivate" : "Reactivate"}
+                      </Button>
+                    </span>
                   )}
                 </Td>
               </tr>
@@ -100,16 +112,23 @@ export default function StaffPage() {
           <>
             <Button variant="outline" onClick={() => setInvite(null)}>Cancel</Button>
             <Button
+              disabled={sending}
               onClick={async () => {
                 if (!invite?.name.trim() || !/^\S+@\S+\.\S+$/.test(invite.email)) return toast("Enter a name and a valid email.", "bad");
-                if (staff.some((s) => s.email.toLowerCase() === invite.email.toLowerCase())) return toast("That email already has an account.", "bad");
-                const s: Staff = { id: uid("s"), name: invite.name.trim(), email: invite.email.trim().toLowerCase(), passwordHash: await sha(DEMO_PASSWORD), roleId: invite.roleId, active: true, createdAt: new Date().toISOString(), avatar: staff.length };
-                upsert("staff", s, "Added staff", s.email);
-                setInvite(null);
-                toast(`Invite sent. Temporary password: ${DEMO_PASSWORD}`);
+                if (staff.some((s) => s.email.toLowerCase() === invite.email.trim().toLowerCase())) return toast("That person is already staff.", "bad");
+                setSending(true);
+                try {
+                  await adminAction("invite_staff", { name: invite.name.trim(), email: invite.email.trim().toLowerCase(), role_id: invite.roleId });
+                  setInvite(null);
+                  toast("Invite sent. They'll get an email to set their password.");
+                } catch (e) {
+                  toast(e instanceof Error ? e.message : "Couldn't send the invite.", "bad");
+                } finally {
+                  setSending(false);
+                }
               }}
             >
-              Send invite
+              {sending ? "Sending…" : "Send invite"}
             </Button>
           </>
         }

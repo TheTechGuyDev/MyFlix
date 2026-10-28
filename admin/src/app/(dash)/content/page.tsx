@@ -4,7 +4,7 @@ import { Copy, ExternalLink, Pencil, Plus, Trash2 } from "lucide-react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useMemo, useState } from "react";
-import { Badge, Button, Card, Confirm, Empty, Input, PageHeader, Select, Table, Td, statusTone, useNow, useToast } from "@/components/ui";
+import { Badge, Button, Card, Confirm, Empty, Input, PageHeader, Select, Table, Td, statusTone, useToast } from "@/components/ui";
 import { GENRES, date, img, num, videoState } from "@/lib/format";
 import { getDb, log, remove, uid, upsert, useDb } from "@/lib/store";
 import type { Title, TitleStatus } from "@/lib/types";
@@ -24,7 +24,6 @@ function ContentLibrary() {
   const params = useSearchParams();
   const router = useRouter();
   const toast = useToast();
-  const now = useNow(2000);
   const [q, setQ] = useState("");
   const [status, setStatus] = useState<string>("all");
   const [type, setType] = useState("all");
@@ -125,7 +124,7 @@ function ContentLibrary() {
         ) : (
           <Table head={[<input key="all" type="checkbox" aria-label="Select all" checked={sel.length === list.length} onChange={(e) => setSel(e.target.checked ? list.map((t) => t.id) : [])} className="accent-brand" />, "Title", "Status", "Video", "Genres", "Views", "Updated", ""]} minW={960}>
             {list.map((t) => {
-              const v = videoState(t.video ?? t.seasonsData?.[0]?.episodes.find((e) => e.video)?.video, now);
+              const v = videoState(t.video ?? t.seasonsData?.[0]?.episodes.find((e) => e.video)?.video);
               return (
                 <tr key={t.id} className="hover:bg-white/40 dark:hover:bg-white/5">
                   <Td><input type="checkbox" aria-label={`Select ${t.title}`} checked={sel.includes(t.id)} onChange={(e) => setSel((s) => (e.target.checked ? [...s, t.id] : s.filter((x) => x !== t.id)))} className="accent-brand" /></Td>

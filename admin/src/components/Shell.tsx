@@ -6,7 +6,7 @@ import {
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
-import { allMembers, can, currentStaff, ensureStaff, logout, markNoticesRead, roleOf, useDb } from "@/lib/store";
+import { allMembers, can, currentStaff, getDb, logout, markNoticesRead, restoreSession, roleOf, useDb } from "@/lib/store";
 import type { Section } from "@/lib/types";
 import { ago, img } from "@/lib/format";
 import { Avatar, Badge, ToastProvider, cx } from "./ui";
@@ -44,7 +44,7 @@ function Inner({ children }: { children: ReactNode }) {
   const path = (usePathname() || "/").replace(/\/$/, "") || "/";
   const staff = useDb((d) => currentStaff(d));
   const role = useDb((d) => roleOf(currentStaff(d), d));
-  const ready = useDb((d) => d.titles.length > 0);
+  const ready = useDb((d) => d.ready);
   const notices = useDb((d) => d.notices);
   const openTickets = useDb((d) => d.tickets.filter((t) => t.status === "open").length);
   const [collapsed, setCollapsed] = useState(false);
@@ -54,16 +54,38 @@ function Inner({ children }: { children: ReactNode }) {
   const [menu, setMenu] = useState(false);
 
   useEffect(() => {
-    ensureStaff();
+    if (!getDb().ready) void restoreSession().then((ok) => !ok && router.replace("/login"));
     setDark(document.documentElement.classList.contains("dark"));
     try {
       setCollapsed(localStorage.getItem("myflix.admin.collapsed") === "1");
     } catch {}
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
     if (ready && !staff) router.replace("/login");
   }, [ready, staff, router]);
+
+  // Staff sessions end after a period of inactivity (Settings > Staff session timeout)
+  const idleMinutes = useDb((d) => d.settings.staffSessionMinutes || 30);
+  useEffect(() => {
+    if (!ready) return;
+    let last = Date.now();
+    const bump = () => (last = Date.now());
+    const events = ["mousemove", "keydown", "click", "touchstart", "scroll"];
+    events.forEach((e) => window.addEventListener(e, bump, { passive: true }));
+    const id = setInterval(async () => {
+      if (Date.now() - last > idleMinutes * 60000) {
+        clearInterval(id);
+        await logout("Signed out after inactivity");
+        router.replace("/login?timeout=1");
+      }
+    }, 30000);
+    return () => {
+      clearInterval(id);
+      events.forEach((e) => window.removeEventListener(e, bump));
+    };
+  }, [ready, idleMinutes, router]);
 
   useEffect(() => setMobile(false), [path]);
 
@@ -102,7 +124,7 @@ function Inner({ children }: { children: ReactNode }) {
       </div>
       <div className="thin-scroll flex-1 space-y-4 overflow-y-auto px-3 pb-4">
         {groups.map((g) => {
-          const items = NAV.filter((n) => n.group === g && role?.permissions.includes(n.section));
+          const items = NAV.filter((n) => n.group === g && can(n.section));
           if (!items.length) return null;
           return (
             <div key={g}>
@@ -199,8 +221,8 @@ function Inner({ children }: { children: ReactNode }) {
                   {can("settings") && <Link href="/settings" className="block rounded-xl px-3 py-2 hover:bg-slate-900/5 dark:hover:bg-white/5">Settings</Link>}
                   <a href={SITE} target="_blank" rel="noreferrer" className="block rounded-xl px-3 py-2 hover:bg-slate-900/5 dark:hover:bg-white/5">Open MyFlix</a>
                   <button
-                    onClick={() => {
-                      logout();
+                    onClick={async () => {
+                      await logout();
                       router.replace("/login");
                     }}
                     className="flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left text-danger hover:bg-slate-900/5 dark:hover:bg-white/5"

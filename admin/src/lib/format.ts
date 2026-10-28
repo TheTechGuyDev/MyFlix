@@ -1,4 +1,4 @@
-import type { Rendition, RenditionLabel, VideoAsset } from "./types";
+import type { VideoAsset } from "./types";
 
 export const naira = (n: number) => `₦${Math.round(n).toLocaleString("en-NG")}`;
 export const nairaShort = (n: number) =>
@@ -18,40 +18,20 @@ export const ago = (iso: string) => {
 export const img = (id: string, w = 400, h?: number) =>
   id.startsWith("http") || id.startsWith("data:") ? id : `https://images.unsplash.com/photo-${id}?auto=format&fit=crop&w=${w}${h ? `&h=${h}` : ""}&q=70`;
 
-/* ---------- Encoding ladder (adaptive streaming renditions) ---------- */
-const LADDER: { label: RenditionLabel; height: number; bitrateKbps: number }[] = [
-  { label: "480p", height: 480, bitrateKbps: 1200 },
-  { label: "720p", height: 720, bitrateKbps: 3000 },
-  { label: "1080p", height: 1080, bitrateKbps: 5800 },
-  { label: "1440p", height: 1440, bitrateKbps: 9500 },
-  { label: "2160p", height: 2160, bitrateKbps: 16000 },
-];
-
-/** Renditions to produce for a source: never upscale. Processing time scales with resolution. */
-export function ladderFor(sourceHeight: number): Rendition[] {
-  const h = sourceHeight || 1080;
-  return LADDER.filter((l) => l.height <= Math.max(h, 480)).map((l) => ({ ...l, durationSec: Math.round(8 + l.height / 90) }));
-}
-
-/** Progress of each rendition based on time since processing started (no background workers needed). */
-export function renditionProgress(v: VideoAsset, now = Date.now()) {
-  const elapsed = (now - new Date(v.processingStartedAt).getTime()) / 1000;
-  let offset = 0;
-  return v.renditions.map((r) => {
-    const p = Math.max(0, Math.min(1, (elapsed - offset * 0.35) / r.durationSec));
-    offset += r.durationSec;
-    return { ...r, progress: p, done: p >= 1 };
-  });
-}
-
-export function videoState(v?: VideoAsset, now = Date.now()) {
+/** Where a Mux video is in its journey: uploading, processing, ready or failed. */
+export function videoState(v?: VideoAsset) {
   if (!v) return { label: "No video", tone: "muted" as const, progress: 0 };
-  if (v.source === "url") return { label: "Ready (external stream)", tone: "ok" as const, progress: 1 };
-  const r = renditionProgress(v, now);
-  const done = r.filter((x) => x.done).length;
-  const progress = r.reduce((a, x) => a + x.progress, 0) / (r.length || 1);
-  if (done === r.length) return { label: `Ready · ${r[r.length - 1]?.label ?? ""}`, tone: "ok" as const, progress: 1 };
-  return { label: `Processing ${Math.round(progress * 100)}%`, tone: "warn" as const, progress };
+  if (v.status === "ready") return { label: `Ready${v.height ? ` · ${v.height >= 2160 ? "4K" : `${v.height}p`}` : ""}`, tone: "ok" as const, progress: 1 };
+  if (v.status === "error") return { label: "Failed, upload again", tone: "bad" as const, progress: 0 };
+  if (v.status === "processing") return { label: "Processing", tone: "warn" as const, progress: 0.6 };
+  return { label: "Uploading", tone: "warn" as const, progress: 0.2 };
+}
+
+export function duration(sec?: number) {
+  if (!sec) return "";
+  const s = Math.round(sec);
+  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60);
+  return h ? `${h}h ${m}m` : `${m}m ${s % 60}s`;
 }
 
 export function toCsv(rows: Record<string, unknown>[]) {

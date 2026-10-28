@@ -47,7 +47,7 @@ export async function requireStaff(req: Request, section: string) {
   return { user, name: (s?.name as string) ?? user.email ?? "Staff" };
 }
 
-export async function audit(staffId: string, staffName: string, action: string, target: string) {
+export async function audit(staffId: string | null, staffName: string, action: string, target: string) {
   await admin.from("audit_log").insert({ staff_id: staffId, staff_name: staffName, action, target });
 }
 

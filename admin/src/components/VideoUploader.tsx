@@ -1,155 +1,178 @@
 "use client";
 
-import { CheckCircle2, Film, Link2, Loader2, Trash2, UploadCloud } from "lucide-react";
-import { useRef, useState } from "react";
-import { deleteMedia, probeVideo, putMedia } from "@/lib/media";
-import { ladderFor, renditionProgress } from "@/lib/format";
-import { uid } from "@/lib/store";
+import { AlertTriangle, CheckCircle2, Film, Loader2, Trash2, UploadCloud, X } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { duration } from "@/lib/format";
+import { uploadVideo, videoStatus, type UploadHandle } from "@/lib/media";
+import { removeVideo, setVideoLocal } from "@/lib/store";
+import { sb } from "@/lib/supabase";
 import type { VideoAsset } from "@/lib/types";
-import { Badge, Button, Input, Progress, cx, useNow } from "./ui";
+import { Badge, Button, Progress, cx } from "./ui";
 
-const MAX_GB = 8;
+const MAX_GB = 20;
 
-/** Upload a master file (stored in the browser) or attach an existing HLS/MP4 URL. Shows the encoding ladder. */
-export default function VideoUploader({ value, onChange, compact }: { value?: VideoAsset; onChange: (v?: VideoAsset) => void; compact?: boolean }) {
+/**
+ * Uploads a master video straight to Mux, which encodes it for adaptive streaming up to 4K.
+ * The title (and episode) must exist in the database first, so `ensureSaved` is called before uploading.
+ */
+export default function VideoUploader({
+  titleId,
+  episodeId,
+  value,
+  ensureSaved,
+  compact,
+}: {
+  titleId?: string;
+  episodeId?: string;
+  value?: VideoAsset;
+  ensureSaved: () => Promise<string | null>;
+  compact?: boolean;
+}) {
   const input = useRef<HTMLInputElement>(null);
-  const [mode, setMode] = useState<"upload" | "url">(value?.source ?? "upload");
-  const [url, setUrl] = useState(value?.url ?? "");
+  const handle = useRef<UploadHandle | null>(null);
   const [busy, setBusy] = useState<null | { name: string; pct: number }>(null);
   const [err, setErr] = useState("");
   const [drag, setDrag] = useState(false);
-  const now = useNow(1000);
+  const [removing, setRemoving] = useState(false);
 
-  const handle = async (file?: File) => {
+  // While Mux is still working, check every 5 seconds and pull the result into the dashboard
+  const pending = value && (value.status === "uploading" || value.status === "processing");
+  useEffect(() => {
+    if (!pending || !titleId) return;
+    let stop = false;
+    const tick = async () => {
+      try {
+        if (value?.upload_id) await videoStatus(value.upload_id);
+        const q = episodeId ? sb().from("episodes").select("video").eq("id", episodeId) : sb().from("titles").select("video").eq("id", titleId);
+        const { data } = await q.maybeSingle();
+        const v = (data?.video ?? undefined) as VideoAsset | undefined;
+        if (!stop && v && (v.status !== value?.status || v.asset_id !== value?.asset_id)) setVideoLocal(titleId, episodeId, v);
+      } catch {
+        /* try again next tick */
+      }
+    };
+    const id = setInterval(tick, 5000);
+    void tick();
+    return () => {
+      stop = true;
+      clearInterval(id);
+    };
+  }, [pending, titleId, episodeId, value?.upload_id, value?.status, value?.asset_id]);
+
+  // Warn before leaving mid-upload
+  useEffect(() => {
+    if (!busy) return;
+    const warn = (e: BeforeUnloadEvent) => e.preventDefault();
+    window.addEventListener("beforeunload", warn);
+    return () => window.removeEventListener("beforeunload", warn);
+  }, [busy]);
+
+  const start = async (file?: File) => {
     if (!file) return;
     setErr("");
-    if (!file.type.startsWith("video/") && !/\.(mp4|mov|mkv|webm|m4v)$/i.test(file.name)) return setErr("Choose a video file (MP4, MOV, MKV or WebM).");
-    if (file.size > MAX_GB * 1024 ** 3) return setErr(`Files over ${MAX_GB} GB must be uploaded through the backend uploader.`);
-    setBusy({ name: file.name, pct: 5 });
-    const meta = await probeVideo(file);
-    setBusy({ name: file.name, pct: 35 });
-    const id = uid("vid-");
-    try {
-      // Simulated chunk progress while the browser writes the file
-      const ticker = setInterval(() => setBusy((b) => (b ? { ...b, pct: Math.min(95, b.pct + 6) } : b)), 250);
-      await putMedia(id, file);
-      clearInterval(ticker);
-    } catch {
+    if (!file.type.startsWith("video/") && !/\.(mp4|mov|mkv|webm|m4v|mxf)$/i.test(file.name)) return setErr("Choose a video file (MP4, MOV, MKV or WebM).");
+    if (file.size > MAX_GB * 1024 ** 3) return setErr(`Files over ${MAX_GB} GB are too large. Export a smaller master (H.264 or ProRes Proxy).`);
+    setBusy({ name: file.name, pct: 0 });
+    const tid = await ensureSaved();
+    if (!tid) {
       setBusy(null);
-      return setErr("Your browser ran out of storage for this file. Free up space or attach a stream URL instead.");
+      return setErr("Fill in and save the title details first, then upload the video.");
     }
-    if (value?.mediaId) deleteMedia(value.mediaId);
-    const now = new Date().toISOString();
-    onChange({
-      source: "upload",
-      mediaId: id,
-      fileName: file.name,
-      sizeMB: Math.round((file.size / 1024 ** 2) * 10) / 10,
-      width: meta.width,
-      height: meta.height,
-      durationSec: Math.round(meta.duration),
-      uploadedAt: now,
-      processingStartedAt: now,
-      renditions: ladderFor(meta.height),
-    });
-    setBusy(null);
+    try {
+      if (value) await removeVideo(tid, episodeId, value);
+      handle.current = uploadVideo(file, { titleId: tid, episodeId, onProgress: (p) => setBusy({ name: file.name, pct: p }) });
+      const upload_id = await handle.current.promise;
+      setVideoLocal(tid, episodeId, { provider: "mux", upload_id, status: "processing", fileName: file.name, sizeMB: Math.round((file.size / 1024 ** 2) * 10) / 10, updated_at: new Date().toISOString() });
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "Upload failed. Try again.");
+    } finally {
+      handle.current = null;
+      setBusy(null);
+    }
   };
 
-  const attachUrl = () => {
-    setErr("");
-    if (!/^https:\/\/.+\.(m3u8|mp4)(\?.*)?$/i.test(url.trim())) return setErr("Enter an https link ending in .m3u8 (HLS) or .mp4.");
-    const now = new Date().toISOString();
-    onChange({ source: "url", url: url.trim(), uploadedAt: now, processingStartedAt: now, renditions: [] });
+  const remove = async () => {
+    if (!titleId || !value) return;
+    if (!confirm("Remove this video? Members won't be able to play it until a new one is uploaded.")) return;
+    setRemoving(true);
+    await removeVideo(titleId, episodeId, value);
+    setRemoving(false);
   };
+
+  if (busy) {
+    return (
+      <div className={cx("rounded-xl border border-slate-200/80 bg-white/50 dark:border-white/10 dark:bg-white/5", compact ? "p-3" : "p-4")}>
+        <div className="mb-2 flex items-center gap-2">
+          <Loader2 size={15} className="animate-spin text-brand" />
+          <p className="min-w-0 flex-1 truncate text-sm font-semibold">Uploading {busy.name}</p>
+          <span className="text-xs text-slate-500">{Math.round(busy.pct * 100)}%</span>
+          <button onClick={() => handle.current?.cancel()} className="rounded p-1 text-slate-500 hover:bg-slate-900/5" title="Cancel upload"><X size={14} /></button>
+        </div>
+        <Progress value={busy.pct} />
+        {!compact && <p className="mt-2 text-xs text-slate-500">Keep this tab open until the upload finishes. Encoding then continues on Mux even if you leave.</p>}
+      </div>
+    );
+  }
 
   if (value) {
-    const r = value.source === "upload" ? renditionProgress(value, now) : [];
-    const ready = r.every((x) => x.done);
+    const ready = value.status === "ready";
+    const failed = value.status === "error";
     return (
       <div className={cx("rounded-xl border border-slate-200/80 bg-white/50 dark:border-white/10 dark:bg-white/5", compact ? "p-3" : "p-4")}>
         <div className="flex items-start gap-3">
-          <span className="rounded-lg bg-brand/10 p-2 text-brand">{value.source === "url" ? <Link2 size={18} /> : <Film size={18} />}</span>
+          <span className="rounded-lg bg-brand/10 p-2 text-brand"><Film size={18} /></span>
           <div className="min-w-0 flex-1">
-            <p className="truncate text-sm font-semibold">{value.source === "url" ? value.url : value.fileName}</p>
+            <p className="truncate text-sm font-semibold">{value.fileName ?? (ready ? "Video" : "New video")}</p>
             <p className="text-xs text-slate-500">
-              {value.source === "url"
-                ? "External stream · adaptive bitrate handled by the stream"
-                : `${value.width}×${value.height} · ${Math.floor((value.durationSec ?? 0) / 60)}m ${(value.durationSec ?? 0) % 60}s · ${value.sizeMB} MB`}
+              {ready
+                ? [value.height ? (value.height >= 2160 ? "4K (2160p)" : `${value.height}p`) : "", duration(value.duration), value.policy === "signed" ? "protected stream" : ""].filter(Boolean).join(" · ")
+                : failed
+                  ? "Mux couldn't read this file. Export it again as MP4 (H.264) and re-upload."
+                  : "Encoding for streaming. Usually a few minutes per hour of video."}
             </p>
           </div>
-          {value.source === "upload" && (ready ? <Badge tone="ok"><CheckCircle2 size={12} /> Ready</Badge> : <Badge tone="warn"><Loader2 size={12} className="animate-spin" /> Encoding</Badge>)}
-          <button
-            onClick={() => {
-              if (value.mediaId) deleteMedia(value.mediaId);
-              onChange(undefined);
-            }}
-            className="rounded-lg p-1.5 text-danger hover:bg-rose-500/10"
-            title="Remove video"
-          >
-            <Trash2 size={15} />
+          {ready ? <Badge tone="ok"><CheckCircle2 size={12} /> Ready</Badge> : failed ? <Badge tone="bad"><AlertTriangle size={12} /> Failed</Badge> : <Badge tone="warn"><Loader2 size={12} className="animate-spin" /> Processing</Badge>}
+          <button onClick={remove} disabled={removing} className="rounded-lg p-1.5 text-danger hover:bg-rose-500/10 disabled:opacity-50" title="Remove video">
+            {removing ? <Loader2 size={15} className="animate-spin" /> : <Trash2 size={15} />}
           </button>
         </div>
-        {r.length > 0 && !compact && (
-          <div className="mt-4 grid gap-2 sm:grid-cols-2">
-            {r.map((x) => (
-              <div key={x.label} className="rounded-lg bg-slate-900/5 p-2.5 dark:bg-white/5">
-                <div className="mb-1.5 flex justify-between text-xs">
-                  <span className="font-semibold">{x.label === "2160p" ? "4K (2160p)" : x.label}</span>
-                  <span className="text-slate-500">{x.done ? `${(x.bitrateKbps / 1000).toFixed(1)} Mbps` : `${Math.round(x.progress * 100)}%`}</span>
-                </div>
-                <Progress value={x.progress} tone={x.done ? "brand" : "warn"} />
-              </div>
-            ))}
-            <p className="text-xs text-slate-500 sm:col-span-2">
-              Encoded to HLS with a {r.length}-step adaptive ladder. Members get the best quality their plan and network allow. Sources are never upscaled.
-            </p>
-          </div>
+        {!compact && ready && (
+          <p className="mt-3 text-xs text-slate-500">
+            Streams with adaptive quality. Each member gets the best their plan and network allow (Mobile 480p, Basic 720p, Standard 1080p, Premium up to 4K). English captions are generated automatically.
+          </p>
         )}
-        {r.length > 0 && compact && !ready && <div className="mt-2"><Progress value={r.reduce((a, x) => a + x.progress, 0) / r.length} tone="warn" /></div>}
+        {!compact && <Button size="sm" variant="ghost" className="mt-2" onClick={() => input.current?.click()} icon={<UploadCloud size={14} />}>Replace video</Button>}
+        <input ref={input} type="file" accept="video/*,.mkv,.mxf" hidden onChange={(e) => start(e.target.files?.[0])} />
+        {err && <p className="mt-2 text-xs text-danger">{err}</p>}
       </div>
     );
   }
 
   return (
     <div>
-      {!compact && (
-        <div className="mb-3 flex gap-2">
-          <Button size="sm" variant={mode === "upload" ? "soft" : "ghost"} onClick={() => setMode("upload")} icon={<UploadCloud size={14} />}>Upload file</Button>
-          <Button size="sm" variant={mode === "url" ? "soft" : "ghost"} onClick={() => setMode("url")} icon={<Link2 size={14} />}>Stream URL</Button>
-        </div>
-      )}
-      {mode === "upload" ? (
-        <div
-          onDragOver={(e) => { e.preventDefault(); setDrag(true); }}
-          onDragLeave={() => setDrag(false)}
-          onDrop={(e) => { e.preventDefault(); setDrag(false); handle(e.dataTransfer.files?.[0]); }}
-          onClick={() => !busy && input.current?.click()}
-          className={cx(
-            "flex cursor-pointer flex-col items-center justify-center rounded-xl border-2 border-dashed text-center transition",
-            compact ? "p-3" : "p-8",
-            drag ? "border-brand bg-brand/5" : "border-slate-300 hover:border-brand dark:border-white/15",
-          )}
-        >
-          <input ref={input} type="file" accept="video/*,.mkv" hidden onChange={(e) => handle(e.target.files?.[0])} />
-          {busy ? (
-            <div className="w-full max-w-sm">
-              <p className="mb-2 truncate text-sm font-semibold">Uploading {busy.name}</p>
-              <Progress value={busy.pct / 100} />
-            </div>
-          ) : (
-            <>
-              <UploadCloud className="text-brand" size={compact ? 18 : 32} />
-              <p className={cx("font-semibold", compact ? "mt-1 text-xs" : "mt-2 text-sm")}>{compact ? "Upload episode video" : "Drop a master video or click to browse"}</p>
-              {!compact && <p className="mt-1 text-xs text-slate-500">MP4, MOV, MKV or WebM up to {MAX_GB} GB · 4K (2160p) sources supported</p>}
-            </>
-          )}
-        </div>
-      ) : (
-        <div className="flex gap-2">
-          <Input value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://cdn.example.com/title/master.m3u8" />
-          <Button onClick={attachUrl}>Attach</Button>
-        </div>
-      )}
+      <div
+        onDragOver={(e) => {
+          e.preventDefault();
+          setDrag(true);
+        }}
+        onDragLeave={() => setDrag(false)}
+        onDrop={(e) => {
+          e.preventDefault();
+          setDrag(false);
+          start(e.dataTransfer.files?.[0]);
+        }}
+        onClick={() => input.current?.click()}
+        className={cx(
+          "flex cursor-pointer flex-col items-center justify-center rounded-xl border-2 border-dashed text-center transition",
+          compact ? "p-3" : "p-8",
+          drag ? "border-brand bg-brand/5" : "border-slate-300 hover:border-brand dark:border-white/15",
+        )}
+      >
+        <input ref={input} type="file" accept="video/*,.mkv,.mxf" hidden onChange={(e) => start(e.target.files?.[0])} />
+        <UploadCloud className="text-brand" size={compact ? 18 : 32} />
+        <p className={cx("font-semibold", compact ? "mt-1 text-xs" : "mt-2 text-sm")}>{compact ? "Upload episode video" : "Drop a master video or click to browse"}</p>
+        {!compact && <p className="mt-1 text-xs text-slate-500">MP4, MOV, MKV or WebM up to {MAX_GB} GB · 4K (2160p) sources supported</p>}
+      </div>
       {err && <p className="mt-2 text-xs text-danger">{err}</p>}
     </div>
   );

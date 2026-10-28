@@ -1,75 +1,88 @@
 "use client";
 
 import { MonitorPlay, Radio, Square, Tv } from "lucide-react";
+import { useCallback, useEffect, useState } from "react";
 import { Badge, Button, Card, CardTitle, Empty, PageHeader, Stat, Table, Td, useToast } from "@/components/ui";
 import { ago, img, num } from "@/lib/format";
-import { useLocal, useNow, writeLocal, readLocal, type LiveStream, type TvCode } from "@/lib/local";
-import { log, useDb } from "@/lib/store";
+import { useDb } from "@/lib/store";
+import { sb } from "@/lib/supabase";
 
-const STALE = 30000;
+type Stream = { id: string; account_id: string; email: string; profile: string | null; device: string | null; title_id: string | null; title: string | null; started_at: string; beat_at: string; screens: number };
+type TvCode = { code: string; created_at: string; expires_at: string; approved_email: string | null; approved_at: string | null; consumed_at: string | null };
 
 export default function LivePage() {
   const toast = useToast();
-  const now = useNow(3000);
-  const live = useLocal<Record<string, LiveStream>>("myflix.live", {}, 3000);
-  const codes = useLocal<Record<string, TvCode>>("myflix.tv.pending", {}, 3000);
   const titles = useDb((d) => d.titles);
-  const plans = useDb((d) => d.plans);
   const settings = useDb((d) => d.settings);
+  const [streams, setStreams] = useState<Stream[]>([]);
+  const [codes, setCodes] = useState<TvCode[]>([]);
+  const [err, setErr] = useState("");
+  const [loaded, setLoaded] = useState(false);
 
-  const streams = Object.values(live).filter((s) => now - s.beat < STALE && !s.stoppedBy).sort((a, b) => b.startedAt.localeCompare(a.startedAt));
-  const accounts = new Set(streams.map((s) => s.email));
-  const tvs = Object.values(codes).sort((a, b) => b.createdAt - a.createdAt).slice(0, 12);
-  const byTitle = streams.reduce<Record<string, number>>((m, s) => ({ ...m, [s.title]: (m[s.title] ?? 0) + 1 }), {});
+  const load = useCallback(async () => {
+    const { data, error } = await sb().rpc("admin_live");
+    if (error) return setErr(error.message);
+    setErr("");
+    setStreams((data?.streams as Stream[]) ?? []);
+    setCodes((data?.tv_codes as TvCode[]) ?? []);
+    setLoaded(true);
+  }, []);
 
-  const stop = (s: LiveStream) => {
-    const all = readLocal<Record<string, LiveStream>>("myflix.live", {});
-    if (all[s.id]) all[s.id] = { ...all[s.id], stoppedBy: "admin" };
-    writeLocal("myflix.live", all);
-    log("Stopped a stream", `${s.email} · ${s.title}`);
+  // Refresh every 5 seconds while the page is open and visible
+  useEffect(() => {
+    void load();
+    const id = setInterval(() => document.visibilityState === "visible" && void load(), 5000);
+    return () => clearInterval(id);
+  }, [load]);
+
+  const accounts = new Set(streams.map((s) => s.account_id));
+  const byTitle = streams.reduce<Record<string, number>>((m, s) => ({ ...m, [s.title ?? "Unknown"]: (m[s.title ?? "Unknown"] ?? 0) + 1 }), {});
+  const perAccount = streams.reduce<Record<string, number>>((m, s) => ({ ...m, [s.account_id]: (m[s.account_id] ?? 0) + 1 }), {});
+  const now = Date.now();
+
+  const stop = async (s: Stream) => {
+    if (!confirm(`Stop ${s.profile ?? s.email} watching ${s.title ?? "this title"}?`)) return;
+    const { error } = await sb().rpc("admin_stop_stream", { p_id: s.id });
+    if (error) return toast(error.message, "bad");
+    setStreams((x) => x.filter((y) => y.id !== s.id));
     toast("Stream stopped. The member sees a 'Playback stopped' message.");
-  };
-
-  const overLimit = (email: string) => {
-    const users = readLocal<Record<string, { planId?: string }>>("myflix.users", {});
-    const screens = plans.find((p) => p.id === users[email]?.planId)?.screens ?? 1;
-    return streams.filter((s) => s.email === email).length > screens;
   };
 
   return (
     <div className="space-y-5">
-      <PageHeader title="Live Now" sub="Who is watching right now across the website, apps and TVs. Updates every few seconds." />
+      <PageHeader title="Live Now" sub="Who is watching right now across the website, apps and TVs. Updates every 5 seconds." />
+      {err && <Card><p className="text-sm text-danger">Couldn&apos;t load live data: {err}</p></Card>}
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <Stat label="Streams playing" value={num(streams.length)} icon={<Radio size={18} />} />
         <Stat label="Accounts watching" value={num(accounts.size)} icon={<MonitorPlay size={18} />} />
-        <Stat label="On Smart TVs" value={num(streams.filter((s) => /TV/i.test(s.device)).length)} icon={<Tv size={18} />} />
+        <Stat label="On Smart TVs" value={num(streams.filter((s) => /TV/i.test(s.device ?? "")).length)} icon={<Tv size={18} />} />
         <Stat label="Screen limits" value={settings.streamLimitEnforced ? "Enforced" : "Off"} hint="Change in Settings" />
       </div>
 
       <Card pad={false}>
         <div className="p-5 pb-0"><CardTitle title="Streams" sub="A stream counts as live for 30 seconds after its last heartbeat" /></div>
         {streams.length === 0 ? (
-          <Empty title="Nobody is watching right now" sub="Open a title on the MyFlix site in another tab and it appears here within seconds." />
+          <Empty title={loaded ? "Nobody is watching right now" : "Loading…"} sub="Streams show here within seconds of a member pressing play." />
         ) : (
           <Table head={["Title", "Member", "Device", "Started", ""]} minW={760}>
             {streams.map((s) => {
-              const t = titles.find((x) => x.id === s.titleId);
+              const t = titles.find((x) => x.id === s.title_id);
               return (
                 <tr key={s.id} className="hover:bg-white/40 dark:hover:bg-white/5">
                   <Td>
                     <span className="flex items-center gap-3">
                       {/* eslint-disable-next-line @next/next/no-img-element */}
                       {t && <img src={img(t.image, 96, 54)} alt="" className="h-9 w-16 rounded object-cover" />}
-                      <span className="font-semibold">{s.title}</span>
+                      <span className="font-semibold">{s.title ?? "Unknown title"}</span>
                     </span>
                   </Td>
                   <Td>
-                    <span className="block">{s.profile}</span>
+                    <span className="block">{s.profile ?? "-"}</span>
                     <span className="text-xs text-slate-500">{s.email}</span>
-                    {overLimit(s.email) && <Badge tone="bad">Over screen limit</Badge>}
+                    {(perAccount[s.account_id] ?? 0) > s.screens && <Badge tone="bad">Over screen limit</Badge>}
                   </Td>
-                  <Td>{s.device}</Td>
-                  <Td>{ago(s.startedAt)}</Td>
+                  <Td>{s.device ?? "-"}</Td>
+                  <Td>{ago(s.started_at)}</Td>
                   <Td><Button size="sm" variant="outline" icon={<Square size={12} />} onClick={() => stop(s)}>Stop</Button></Td>
                 </tr>
               );
@@ -95,17 +108,20 @@ export default function LivePage() {
           )}
         </Card>
         <Card>
-          <CardTitle title="TV sign-in codes" sub="Codes shown on MyFlix for TV and whether a phone approved them" />
-          {tvs.length === 0 ? (
-            <p className="text-sm text-slate-500">No TV codes yet. Open /tv on the site to create one.</p>
+          <CardTitle title="TV sign-in codes" sub="Recent codes shown on TVs and whether a phone approved them" />
+          {codes.length === 0 ? (
+            <p className="text-sm text-slate-500">No TV codes yet.</p>
           ) : (
             <ul className="divide-y divide-slate-200/70 text-sm dark:divide-white/10">
-              {tvs.map((c) => (
+              {codes.map((c) => (
                 <li key={c.code} className="flex items-center justify-between py-2">
                   <span className="font-mono">{c.code.slice(0, 4)} {c.code.slice(4)}</span>
-                  {c.paired ? (
-                    <span className="text-right"><Badge tone="ok">Paired</Badge><span className="block text-xs text-slate-500">{c.paired.email} · {ago(c.paired.at)}</span></span>
-                  ) : c.exp < now ? (
+                  {c.approved_at ? (
+                    <span className="text-right">
+                      <Badge tone="ok">{c.consumed_at ? "Signed in" : "Approved"}</Badge>
+                      <span className="block text-xs text-slate-500">{c.approved_email} · {ago(c.approved_at)}</span>
+                    </span>
+                  ) : new Date(c.expires_at).getTime() < now ? (
                     <Badge tone="muted">Expired</Badge>
                   ) : (
                     <Badge tone="warn">Waiting</Badge>

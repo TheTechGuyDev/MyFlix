@@ -1,33 +1,36 @@
 "use client";
 
 import { Bell, Mail, MessageSquare, Plus, Send, Smartphone } from "lucide-react";
-import { useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Badge, Button, Card, Empty, Field, Input, Modal, PageHeader, Select, Stat, Table, Tabs, Td, Textarea, statusTone, useToast } from "@/components/ui";
-import { readLocal, useLocal, writeLocal, type OutMsg } from "@/lib/local";
 import { dateTime, img, num } from "@/lib/format";
-import { allMembers, remove, uid, upsert, useDb } from "@/lib/store";
+import { allMembers, log, remove, saveCampaign, useDb } from "@/lib/store";
+import { sb } from "@/lib/supabase";
 import type { Campaign } from "@/lib/types";
 
-const AUDIENCES = ["All active members", "Cancelled in last 90 days", "Past due members", "Trial members", "Premium members", "Mobile plan members", "Kids profiles", "Romance fans", "Thriller fans", "Lagos members", "Abuja (FCT) members"];
+// Must match the audiences the campaigns function understands
+const AUDIENCES = ["All active members", "Cancelled in last 90 days", "Past due members", "Signed up, never paid", "Premium members", "Mobile plan members", "Lagos members", "Abuja (FCT) members"];
 
 function reachFor(audience: string, members: ReturnType<typeof allMembers>) {
-  const active = members.filter((m) => m.status === "active");
+  const now = Date.now();
+  const access = (m: (typeof members)[number]) => ["active", "cancelled", "past_due"].includes(m.status) && Boolean(m.paidUntil && new Date(m.paidUntil).getTime() > now);
+  const active = members.filter(access);
   switch (audience) {
     case "Cancelled in last 90 days": return members.filter((m) => m.status === "cancelled").length;
     case "Past due members": return members.filter((m) => m.status === "past_due").length;
-    case "Trial members": return members.filter((m) => m.status === "trial").length;
+    case "Signed up, never paid": return members.filter((m) => m.status === "pending").length;
     case "Premium members": return active.filter((m) => m.planId === "premium").length;
     case "Mobile plan members": return active.filter((m) => m.planId === "mobile").length;
-    case "Kids profiles": return active.filter((m) => m.profiles.some((p) => p.kids)).length;
     case "Lagos members": return active.filter((m) => m.state === "Lagos").length;
     case "Abuja (FCT) members": return active.filter((m) => m.state === "Abuja (FCT)").length;
-    case "Romance fans":
-    case "Thriller fans": return Math.round(active.length * 0.38);
     default: return active.length;
   }
 }
 
+type OutMsg = { id: number; channel: "email" | "sms" | "push"; kind: string; to_addr: string; subject: string | null; body: string | null; status: string; error: string | null; created_at: string };
 const icon = (c: Campaign["channel"]) => (c === "push" ? <Smartphone size={14} /> : c === "email" ? <Mail size={14} /> : c === "sms" ? <MessageSquare size={14} /> : <Bell size={14} />);
+const mask = (m: OutMsg, t: string | null) => (m.kind.startsWith("auth") ? (t ?? "").replace(/\b\d{6}\b/g, "••••••") : t ?? "");
+const plain = (html: string) => html.replace(/<style[\s\S]*?<\/style>/gi, "").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().slice(0, 220);
 
 export default function CampaignsPage() {
   const campaigns = useDb((d) => d.campaigns);
@@ -37,30 +40,40 @@ export default function CampaignsPage() {
   const [edit, setEdit] = useState<Campaign | null>(null);
   const [tab, setTab] = useState<"campaigns" | "log">("campaigns");
   const [chan, setChan] = useState<"all" | OutMsg["channel"]>("all");
-  const outbox = useLocal<OutMsg[]>("myflix.outbox", [], 4000);
+  const [outbox, setOutbox] = useState<OutMsg[]>([]);
+  const [busy, setBusy] = useState(false);
   const sent = campaigns.filter((c) => c.status === "sent");
   const reach = sent.reduce((a, c) => a + c.reach, 0);
-  const opens = sent.reduce((a, c) => a + c.opens, 0);
-  const clicks = sent.reduce((a, c) => a + c.clicks, 0);
 
-  const save = (status: Campaign["status"]) => {
+  const loadLog = useCallback(async () => {
+    let q = sb().from("outbox").select("*").order("created_at", { ascending: false }).limit(200);
+    if (chan !== "all") q = q.eq("channel", chan);
+    const { data } = await q;
+    setOutbox((data as OutMsg[]) ?? []);
+  }, [chan]);
+  useEffect(() => {
+    if (tab === "log") void loadLog();
+  }, [tab, loadLog]);
+
+  const save = async (status: "draft" | "scheduled" | "sent") => {
     if (!edit) return;
     if (!edit.name.trim() || !edit.subject.trim() || !edit.body.trim()) return toast("Name, headline and message are required.", "bad");
-    if (status === "scheduled" && !edit.scheduledAt) return toast("Pick a send time to schedule.", "bad");
+    if (status === "scheduled" && (!edit.scheduledAt || new Date(edit.scheduledAt).getTime() < Date.now())) return toast("Pick a send time in the future to schedule.", "bad");
     const r = reachFor(edit.audience, members);
-    const c: Campaign = {
-      ...edit,
-      id: edit.id || uid("c"),
-      status,
-      ...(status === "sent" ? { sentAt: new Date().toISOString(), reach: r, opens: Math.round(r * (edit.channel === "push" ? 0.46 : edit.channel === "sms" ? 0.9 : 0.38)), clicks: Math.round(r * (edit.channel === "email" ? 0.11 : 0.19)) } : {}),
-    };
-    if (status === "sent" && c.channel !== "in_app") {
-      const msg: OutMsg = { id: uid("m"), channel: c.channel === "push" ? "push" : c.channel, kind: "campaign", to: `${num(r)} members · ${c.audience}`, subject: c.subject, body: c.body, at: new Date().toISOString() };
-      writeLocal("myflix.outbox", [msg, ...readLocal<OutMsg[]>("myflix.outbox", [])].slice(0, 300));
+    if (status === "sent" && !confirm(`Send "${edit.subject}" by ${edit.channel.replace("_", "-")} to about ${num(r)} members now? This can't be undone.`)) return;
+    const c: Campaign = { ...edit, id: edit.id || crypto.randomUUID(), status: status === "sent" ? "draft" : status };
+    setBusy(true);
+    try {
+      const n = await saveCampaign(c, status === "sent");
+      if (n == null) return;
+      log(status === "sent" ? `Sent ${c.channel} campaign` : status === "scheduled" ? "Scheduled campaign" : "Saved campaign draft", c.name);
+      toast(status === "sent" ? `Sent to ${num(n)} members.` : status === "scheduled" ? `Scheduled for ${dateTime(c.scheduledAt)}.` : "Campaign saved.");
+      setEdit(null);
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Couldn't send the campaign.", "bad");
+    } finally {
+      setBusy(false);
     }
-    upsert("campaigns", c, status === "sent" ? `Sent ${c.channel} campaign` : status === "scheduled" ? "Scheduled campaign" : "Saved campaign draft", c.name);
-    toast(status === "sent" ? `Sent to ${num(r)} members.` : "Campaign saved.");
-    setEdit(null);
   };
 
   return (
@@ -69,14 +82,14 @@ export default function CampaignsPage() {
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <Stat label="Campaigns sent" value={String(sent.length)} />
         <Stat label="Total reach" value={num(reach)} />
-        <Stat label="Open rate" value={`${reach ? ((opens / reach) * 100).toFixed(1) : 0}%`} />
-        <Stat label="Click rate" value={`${reach ? ((clicks / reach) * 100).toFixed(1) : 0}%`} />
+        <Stat label="Scheduled" value={String(campaigns.filter((c) => c.status === "scheduled").length)} hint="Sent automatically on the hour" />
+        <Stat label="Drafts" value={String(campaigns.filter((c) => c.status === "draft").length)} />
       </div>
-      <Tabs tabs={[{ id: "campaigns", label: "Campaigns", count: campaigns.length }, { id: "log", label: "Delivery log", count: outbox.length }]} value={tab} onChange={setTab} />
+      <Tabs tabs={[{ id: "campaigns", label: "Campaigns", count: campaigns.length }, { id: "log", label: "Delivery log" }]} value={tab} onChange={setTab} />
       {tab === "log" ? (
         <Card pad={false}>
           <div className="flex flex-wrap items-center justify-between gap-3 p-5 pb-3">
-            <p className="text-sm text-slate-500">Every email, SMS and push the platform sends: sign-in codes, password resets, receipts, security alerts, reminders and campaigns. With the backend these go through the email/SMS provider.</p>
+            <p className="max-w-2xl text-sm text-slate-500">The last 200 emails and texts the platform sent: sign-in codes (hidden), password resets, receipts, reminders and campaigns. &quot;Skipped&quot; means the email or SMS keys aren&apos;t set yet.</p>
             <Select value={chan} onChange={(e) => setChan(e.target.value as typeof chan)} aria-label="Channel" className="!w-40">
               <option value="all">All channels</option>
               <option value="email">Email</option>
@@ -84,17 +97,18 @@ export default function CampaignsPage() {
               <option value="push">Push</option>
             </Select>
           </div>
-          {outbox.filter((m) => chan === "all" || m.channel === chan).length === 0 ? (
-            <Empty title="Nothing sent yet" sub="Sign up, reset a password or request a sign-in code on the MyFlix site and the message appears here." />
+          {outbox.length === 0 ? (
+            <Empty title="Nothing sent yet" sub="Sign-up codes, password resets, receipts and campaigns appear here once they're sent." />
           ) : (
-            <Table head={["When", "Channel", "Type", "To", "Message"]} minW={860}>
-              {outbox.filter((m) => chan === "all" || m.channel === chan).map((m) => (
+            <Table head={["When", "Channel", "Type", "To", "Message", "Status"]} minW={960}>
+              {outbox.map((m) => (
                 <tr key={m.id} className="align-top hover:bg-white/40 dark:hover:bg-white/5">
-                  <Td className="whitespace-nowrap text-xs">{dateTime(m.at)}</Td>
-                  <Td><Badge tone="info">{icon(m.channel === "push" ? "push" : m.channel)} {m.channel}</Badge></Td>
-                  <Td className="capitalize">{m.kind}</Td>
-                  <Td className="text-xs">{m.to}</Td>
-                  <Td><span className="block font-semibold">{m.subject}</span><span className="text-xs text-slate-500">{m.kind === "code" ? m.body.replace(/^\d{6}/, "••••••") : m.body}</span></Td>
+                  <Td className="whitespace-nowrap text-xs">{dateTime(m.created_at)}</Td>
+                  <Td><Badge tone="info">{icon(m.channel)} {m.channel}</Badge></Td>
+                  <Td className="text-xs">{m.kind.replace("auth:", "")}</Td>
+                  <Td className="text-xs">{m.to_addr}</Td>
+                  <Td><span className="block font-semibold">{mask(m, m.subject)}</span><span className="text-xs text-slate-500">{mask(m, plain(m.body ?? ""))}</span></Td>
+                  <Td><Badge tone={m.status === "sent" ? "ok" : m.status === "failed" ? "bad" : "muted"}>{m.status}</Badge>{m.error && <span className="block max-w-[180px] text-xs text-danger">{m.error}</span>}</Td>
                 </tr>
               ))}
             </Table>
@@ -102,23 +116,22 @@ export default function CampaignsPage() {
         </Card>
       ) : (
       <Card pad={false}>
-        <Table head={["Campaign", "Channel", "Audience", "Status", "Reach", "Opens", "Clicks", ""]} minW={900}>
+        {campaigns.length === 0 && <Empty title="No campaigns yet" sub="Create one to tell members about new releases." />}
+        {campaigns.length > 0 && <Table head={["Campaign", "Channel", "Audience", "Status", "Reach", ""]} minW={800}>
           {campaigns.map((c) => (
             <tr key={c.id} className="hover:bg-white/40 dark:hover:bg-white/5">
               <Td><span className="block font-semibold">{c.name}</span><span className="text-xs text-slate-500">{c.subject}</span></Td>
               <Td><Badge tone="info">{icon(c.channel)} {c.channel.replace("_", "-")}</Badge></Td>
               <Td className="text-xs">{c.audience}</Td>
               <Td><Badge tone={statusTone(c.status)}>{c.status}</Badge><span className="mt-0.5 block text-xs text-slate-500">{dateTime(c.sentAt ?? c.scheduledAt)}</span></Td>
-              <Td>{num(c.reach)}</Td>
-              <Td>{c.reach ? `${((c.opens / c.reach) * 100).toFixed(0)}%` : "-"}</Td>
-              <Td>{c.reach ? `${((c.clicks / c.reach) * 100).toFixed(0)}%` : "-"}</Td>
+              <Td>{c.status === "sent" ? num(c.reach) : "-"}</Td>
               <Td>
-                {c.status !== "sent" && <Button size="sm" variant="soft" onClick={() => setEdit({ ...c })}>Edit</Button>}
+                {c.status !== "sent" && c.status !== "sending" && <Button size="sm" variant="soft" onClick={() => setEdit({ ...c })}>Edit</Button>}
                 {c.status === "sent" && <Button size="sm" variant="ghost" onClick={() => setEdit({ ...c, id: "", name: `${c.name} (copy)`, status: "draft", reach: 0, opens: 0, clicks: 0 })}>Duplicate</Button>}
               </Td>
             </tr>
           ))}
-        </Table>
+        </Table>}
       </Card>
       )}
 
@@ -130,9 +143,9 @@ export default function CampaignsPage() {
         footer={
           <>
             {edit?.id && <Button variant="ghost" className="mr-auto text-danger" onClick={() => { remove("campaigns", edit.id, "Deleted campaign", edit.name); setEdit(null); }}>Delete</Button>}
-            <Button variant="outline" onClick={() => save("draft")}>Save draft</Button>
-            <Button variant="outline" onClick={() => save("scheduled")}>Schedule</Button>
-            <Button icon={<Send size={14} />} onClick={() => save("sent")}>Send now</Button>
+            <Button variant="outline" disabled={busy} onClick={() => save("draft")}>Save draft</Button>
+            <Button variant="outline" disabled={busy} onClick={() => save("scheduled")}>Schedule</Button>
+            <Button icon={<Send size={14} />} disabled={busy} onClick={() => save("sent")}>{busy ? "Sending…" : "Send now"}</Button>
           </>
         }
       >
@@ -143,8 +156,8 @@ export default function CampaignsPage() {
               <div className="grid gap-3 sm:grid-cols-2">
                 <Field label="Channel">
                   <Select value={edit.channel} onChange={(e) => setEdit({ ...edit, channel: e.target.value as Campaign["channel"] })}>
-                    <option value="push">Push notification</option>
-                    <option value="email">Email</option>
+                    <option value="push">App notification</option>
+                    <option value="email">Email (members who opted in to offers)</option>
                     <option value="sms">SMS</option>
                     <option value="in_app">In-app banner</option>
                   </Select>

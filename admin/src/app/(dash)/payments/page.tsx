@@ -7,7 +7,7 @@ import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxi
 import { Badge, Button, Card, CardTitle, Input, PageHeader, Select, Stat, Table, Td, statusTone, useToast } from "@/components/ui";
 import { chartTip, dateTime, download, naira, nairaShort, toCsv } from "@/lib/format";
 import { monthKeys } from "@/lib/metrics";
-import { upsert, useDb } from "@/lib/store";
+import { adminAction, useDb } from "@/lib/store";
 
 export default function Page() {
   return (
@@ -18,7 +18,18 @@ export default function Page() {
 }
 
 function Payments() {
-  const txns = useDb((d) => d.txns);
+  const txns = useDb((d) => d.txns.filter((t) => t.kind !== "card_update"));
+  const [busy, setBusy] = useState("");
+  const act = async (id: string, fn: () => Promise<string>) => {
+    setBusy(id);
+    try {
+      toast(await fn());
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Something went wrong.", "bad");
+    } finally {
+      setBusy("");
+    }
+  };
   const plans = useDb((d) => d.plans);
   const params = useSearchParams();
   const toast = useToast();
@@ -114,8 +125,16 @@ function Payments() {
               <Td className="text-xs text-slate-500">{dateTime(t.at)}</Td>
               <Td><Badge tone={statusTone(t.status)}>{t.status}</Badge></Td>
               <Td>
-                {t.status === "failed" && <Button size="sm" variant="soft" icon={<RefreshCw size={13} />} onClick={() => { upsert("txns", { ...t, status: "success", at: new Date().toISOString() }, "Retried payment", t.reference); toast(`Charge of ${naira(t.amount)} succeeded on retry.`); }}>Retry</Button>}
-                {t.status === "success" && t.amount > 0 && <Button size="sm" variant="ghost" icon={<RotateCcw size={13} />} onClick={() => { upsert("txns", { ...t, status: "refunded" }, "Refunded payment", t.reference); toast(`Refunded ${naira(t.amount)}.`); }}>Refund</Button>}
+                {(t.status === "failed" || t.status === "pending") && (
+                  <Button size="sm" variant="soft" disabled={busy === t.id} icon={<RefreshCw size={13} className={busy === t.id ? "animate-spin" : ""} />} onClick={() => act(t.id, async () => { const r = await adminAction("verify_payment", { payment_id: t.id }) as { status: string; message?: string }; return r.status === "success" ? `Payment confirmed. ${t.email} now has access.` : `Paystack says: ${r.message || r.status}.`; })}>
+                    Check with Paystack
+                  </Button>
+                )}
+                {t.status === "success" && t.amount > 0 && t.method !== "credit" && (
+                  <Button size="sm" variant="ghost" disabled={busy === t.id} icon={<RotateCcw size={13} />} onClick={() => { if (!confirm(`Refund ${naira(t.amount)} to ${t.email}? This can't be undone.`)) return; void act(t.id, async () => { await adminAction("refund", { payment_id: t.id }); return `Refund of ${naira(t.amount)} started. It reaches the member in 5 to 10 working days.`; }); }}>
+                    Refund
+                  </Button>
+                )}
               </Td>
             </tr>
           ))}
