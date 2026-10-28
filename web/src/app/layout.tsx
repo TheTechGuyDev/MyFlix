@@ -1,7 +1,8 @@
 import type { Metadata, Viewport } from "next";
 import localFont from "next/font/local";
 import "./globals.css";
-import DemoInbox from "@/components/DemoInbox";
+import AppGate from "@/components/AppGate";
+import CookieNotice from "@/components/CookieNotice";
 
 const inter = localFont({
   src: "../fonts/Inter-Variable.woff2",
@@ -31,8 +32,8 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
   return (
     <html lang="en" className={`${inter.variable} ${bebas.variable} antialiased`}>
       <body className="min-h-screen bg-ink">
-        {children}
-        <DemoInbox />
+        <AppGate>{children}</AppGate>
+        <CookieNotice />
       </body>
     </html>
   );

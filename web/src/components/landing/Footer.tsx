@@ -1,21 +1,33 @@
 import Link from "next/link";
-import { footerLinks } from "@/lib/landing-data";
 import LanguageSelect from "./LanguageSelect";
+
+const links: [string, string][] = [
+  ["FAQ", "/#faq"],
+  ["Help Centre", "/help"],
+  ["Account", "/account"],
+  ["Ways to Watch", "/help"],
+  ["Watch on TV", "/tv"],
+  ["Gift Cards", "/account/gift"],
+  ["Terms of Use", "/terms"],
+  ["Privacy", "/privacy"],
+  ["Cookie Policy", "/cookies"],
+  ["Contact Us", "/help"],
+];
 
 export default function Footer() {
   return (
     <footer className="mx-auto max-w-7xl px-4 pb-16 pt-12 text-muted sm:px-8 lg:px-12">
       <p className="mb-6">
-        Questions? Call{" "}
-        <a href="tel:+2348000000000" className="underline hover:text-white">
-          0800 000 0000
+        Questions? Email{" "}
+        <a href="mailto:help@myflix.ng" className="underline hover:text-white">
+          help@myflix.ng
         </a>
       </p>
       <ul className="grid grid-cols-2 gap-x-4 gap-y-3 text-sm sm:grid-cols-3 lg:grid-cols-4">
-        {footerLinks.map((l) => (
-          <li key={l}>
-            <Link href={l === "FAQ" ? "#faq" : "/help"} className="underline hover:text-white">
-              {l}
+        {links.map(([label, href]) => (
+          <li key={label}>
+            <Link href={href} className="underline hover:text-white">
+              {label}
             </Link>
           </li>
         ))}
@@ -23,7 +35,7 @@ export default function Footer() {
       <div className="mt-8">
         <LanguageSelect />
       </div>
-      <p className="mt-6 text-sm">MyFlix Nigeria</p>
+      <p className="mt-6 text-sm">© {new Date().getFullYear()} MyFlix Nigeria</p>
     </footer>
   );
 }

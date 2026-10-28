@@ -6,13 +6,12 @@ import { useEffect, useState } from "react";
 import Avatar from "@/components/auth/Avatar";
 import { PrimaryButton } from "@/components/auth/ui";
 import { byId, img } from "@/lib/catalog";
-import { activityOf, clearActivity, hideActivity, redeemGift, referralCode, thisMonth, watchedTodayMinutes, type ActivityItem } from "@/lib/extras";
-import { addCredit, getActiveProfileId, settingsOf } from "@/lib/mock-auth";
+import { activityOf, clearActivity, hideActivity, loadUsage, referralCode, thisMonth, watchedTodayMinutes, type ActivityItem } from "@/lib/extras";
+import { getActiveProfileId, redeemGiftCard, settingsOf } from "@/lib/account";
+import { loadLibrary } from "@/lib/library";
 import { naira } from "@/lib/plans";
 import { Card, PageTitle, fmtDate, useAccountCtx } from "./AccountShell";
-import { addTvDevice, formatTvCode, pairTvCode } from "@/lib/tv";
-
-const RATED = "myflix.lib.";
+import { approveTvCode, formatTvCode } from "@/lib/tv";
 
 /* ---------------- Viewing activity ---------------- */
 export function Activity() {
@@ -23,12 +22,9 @@ export function Activity() {
   const [ratings, setRatings] = useState<Record<string, number>>({});
 
   useEffect(() => {
-    setItems(activityOf(pid));
-    try {
-      setRatings(JSON.parse(localStorage.getItem(RATED + pid) ?? "{}").ratings ?? {});
-    } catch {
-      setRatings({});
-    }
+    if (!pid) return;
+    activityOf(pid).then(setItems);
+    loadLibrary(pid).then((l) => setRatings(l.ratings));
   }, [pid]);
 
   const download = () => {
@@ -59,7 +55,7 @@ export function Activity() {
           {tab === "watched" && items.length > 0 && (
             <div className="ml-auto flex gap-3 text-sm">
               <button onClick={download} className="font-semibold text-brand hover:underline">Download all</button>
-              <button onClick={() => { clearActivity(pid); setItems([]); }} className="font-semibold text-danger hover:underline">Hide all</button>
+              <button onClick={async () => { await clearActivity(pid); setItems([]); }} className="font-semibold text-danger hover:underline">Hide all</button>
             </div>
           )}
         </div>
@@ -71,13 +67,13 @@ export function Activity() {
               {items.map((i) => {
                 const t = byId(i.titleId);
                 return (
-                  <li key={i.at} className="flex items-center gap-3 py-3">
+                  <li key={i.id} className="flex items-center gap-3 py-3">
                     <span className="w-28 shrink-0 text-sm text-neutral-500">{fmtDate(i.at)}</span>
                     <span className="flex-1 font-semibold">
                       {t?.title ?? "Removed title"}
                       {i.season ? <span className="font-normal text-neutral-500"> · Season {i.season}, Episode {i.episode}</span> : null}
                     </span>
-                    <button onClick={() => { hideActivity(pid, i.at); setItems(activityOf(pid)); }} className="text-sm text-neutral-500 hover:text-danger" title="Hide from viewing history">Hide</button>
+                    <button onClick={async () => { await hideActivity(pid, i); setItems(await activityOf(pid)); }} className="text-sm text-neutral-500 hover:text-danger" title="Hide from viewing history">Hide</button>
                   </li>
                 );
               })}
@@ -105,13 +101,20 @@ export function DataMeter() {
   const { account } = useAccountCtx();
   const [rows, setRows] = useState<{ name: string; avatar: number; gb: number; hours: number; today: number; cap?: number; limit?: number }[]>([]);
   useEffect(() => {
-    setRows(
-      account.profiles.map((p) => {
-        const m = thisMonth(p.id);
-        const s = settingsOf(p);
-        return { name: p.name, avatar: p.avatar, gb: m.gb, hours: m.seconds / 3600, today: watchedTodayMinutes(p.id), cap: s.monthlyDataCapGB, limit: s.dailyLimitMinutes };
-      }),
-    );
+    let off = false;
+    Promise.all(account.profiles.map((p) => loadUsage(p.id))).then(() => {
+      if (off) return;
+      setRows(
+        account.profiles.map((p) => {
+          const m = thisMonth(p.id);
+          const s = settingsOf(p);
+          return { name: p.name, avatar: p.avatar, gb: m.gb, hours: m.seconds / 3600, today: watchedTodayMinutes(p.id), cap: s.monthlyDataCapGB, limit: s.dailyLimitMinutes };
+        }),
+      );
+    });
+    return () => {
+      off = true;
+    };
   }, [account]);
   const total = rows.reduce((a, r) => a + r.gb, 0);
   return (
@@ -159,14 +162,13 @@ export function GiftCards() {
             className="!h-12 !w-32 !text-base"
             onClick={async () => {
               setErr("");
-              const r = redeemGift(code, account.email);
-              if (!r.ok) return setErr(r.error);
               setLoading(true);
-              await addCredit(r.amount);
+              const r = await redeemGiftCard(code);
               setLoading(false);
+              if (!r.ok) return setErr(r.error);
               refresh();
               setCode("");
-              toast(`${naira(r.amount)} added to your account.`);
+              toast(`${naira(r.data)} added to your account.`);
             }}
           >
             Redeem
@@ -182,7 +184,7 @@ export function GiftCards() {
 /* ---------------- Referrals ---------------- */
 export function Invite() {
   const { account, toast } = useAccountCtx();
-  const code = referralCode(account.email);
+  const code = referralCode();
   const link = typeof window !== "undefined" ? `${window.location.origin}${window.location.pathname.replace(/\/account.*$/, "")}/signup?ref=${code}` : "";
   const msg = `Join me on MyFlix: Nollywood, movies and series from ₦1,500. Use my code ${code} and we both get a free month: ${link}`;
   return (
@@ -201,9 +203,9 @@ export function Invite() {
         <ol className="list-inside list-decimal space-y-2 text-neutral-700">
           <li>Share your link or code with friends and family.</li>
           <li>They sign up and pay for their first month.</li>
-          <li>You both get a free month, added automatically. Up to 12 free months a year.</li>
+          <li>You both get a free month, added automatically.</li>
         </ol>
-        {account.referredBy && <p className="mt-4 text-sm text-brand">You joined with code {account.referredBy}. Your free month has been applied.</p>}
+        {account.referredBy && <p className="mt-4 text-sm text-brand">You joined with code {account.referredBy}.</p>}
       </Card>
     </div>
   );
@@ -211,7 +213,7 @@ export function Invite() {
 
 /* ---------------- TV sign-in ---------------- */
 export function TvLink() {
-  const { account, refresh, toast } = useAccountCtx();
+  const { refresh, toast } = useAccountCtx();
   const [code, setCode] = useState(() => (typeof window === "undefined" ? "" : formatTvCode(new URLSearchParams(location.search).get("code") ?? "")));
   const [done, setDone] = useState(false);
   const [err, setErr] = useState("");
@@ -238,10 +240,10 @@ export function TvLink() {
             {err && <p className="mt-2 text-sm text-danger">{err}</p>}
             <PrimaryButton
               className="mt-4"
-              onClick={() => {
-                const r = pairTvCode(code, account.email);
+              onClick={async () => {
+                setErr("");
+                const r = await approveTvCode(code);
                 if (!r.ok) return setErr(r.error);
-                addTvDevice(account.email);
                 refresh();
                 setDone(true);
                 toast("TV signed in.");

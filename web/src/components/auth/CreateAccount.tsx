@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useState } from "react";
-import { emailExists, getAccount, nextStep, setReferredBy, signUp } from "@/lib/mock-auth";
+import { getAccount, nextStep, resendSignupCode, signUp, updateNotifications, verifySignupCode, defaultNotifications } from "@/lib/account";
 import { siteSettings } from "@/lib/site-settings";
 import { Alert, Field, PrimaryButton, validateEmail, validatePassword } from "./ui";
 import { StepLabel } from "./SignupShell";
@@ -18,6 +18,9 @@ export default function CreateAccount() {
   const [errors, setErrors] = useState<{ email?: string; password?: string; agree?: string }>({});
   const [formError, setFormError] = useState("");
   const [loading, setLoading] = useState(false);
+  const [confirm, setConfirm] = useState(false);
+  const [code, setCode] = useState("");
+  const [resent, setResent] = useState(false);
 
   useEffect(() => {
     const acc = getAccount();
@@ -36,20 +39,55 @@ export default function CreateAccount() {
     if (next.email || next.password || next.agree) return;
 
     setLoading(true);
-    if (await emailExists(email)) {
-      setLoading(false);
-      setFormError("exists");
-      return;
-    }
-    const res = await signUp(email, password);
+    const ref = params.get("ref") ?? undefined;
+    const res = await signUp(email, password, ref?.toUpperCase());
     setLoading(false);
-    if (!res.ok) return setFormError(res.error);
-    const ref = params.get("ref");
-    if (ref) await setReferredBy(ref.toUpperCase());
+    if (!res.ok) return setFormError(/already exists/.test(res.error) ? "exists" : res.error);
+    if (res.data.needsConfirm) return setConfirm(true);
+    await finish();
+  };
+
+  const finish = async () => {
+    if (offers) await updateNotifications({ ...defaultNotifications, offers: true });
     router.push("/signup/plan");
   };
 
+  const onConfirm = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!/^\d{6}$/.test(code)) return setFormError("Enter the 6-digit code from the email.");
+    setLoading(true);
+    const r = await verifySignupCode(email, code);
+    setLoading(false);
+    if (!r.ok) return setFormError(r.error);
+    await finish();
+  };
+
   const hasEmail = Boolean(params.get("email"));
+
+  if (confirm) {
+    return (
+      <form onSubmit={onConfirm} noValidate className="space-y-4">
+        <StepLabel step={1} />
+        <h1 className="text-3xl font-bold leading-tight">Confirm your email</h1>
+        <p className="text-lg">We sent a 6-digit code and a link to <b>{email}</b>. Enter the code, or tap the link in the email.</p>
+        {formError && <Alert>{formError}</Alert>}
+        <Field label="6-digit code" inputMode="numeric" autoComplete="one-time-code" maxLength={6} value={code} onChange={(e) => setCode(e.target.value.replace(/\D/g, ""))} />
+        <PrimaryButton type="submit" loading={loading} className="mt-2">Confirm</PrimaryButton>
+        <button
+          type="button"
+          disabled={resent}
+          onClick={async () => {
+            const r = await resendSignupCode(email);
+            setFormError(r.ok ? "" : r.error);
+            setResent(true);
+          }}
+          className="font-semibold text-brand hover:underline disabled:text-neutral-500"
+        >
+          {resent ? "Code sent again. Check spam too." : "Resend code"}
+        </button>
+      </form>
+    );
+  }
 
   if (!siteSettings().signupsOpen) {
     return (
@@ -101,8 +139,8 @@ export default function CreateAccount() {
       <label className="flex items-start gap-3 text-base">
         <input type="checkbox" checked={agree} onChange={(e) => setAgree(e.target.checked)} className="mt-1 h-5 w-5 accent-brand" />
         <span>
-          I agree to the <Link href="/#faq" className="text-brand underline">Terms of Use</Link> and{" "}
-          <Link href="/#faq" className="text-brand underline">Privacy Statement</Link>, and confirm I am over 18.
+          I agree to the <Link href="/terms" target="_blank" className="text-brand underline">Terms of Use</Link> and{" "}
+          <Link href="/privacy" target="_blank" className="text-brand underline">Privacy Policy</Link>, and confirm I am 18 or older.
         </span>
       </label>
       {errors.agree && <p className="-mt-2 text-sm text-danger">{errors.agree}</p>}

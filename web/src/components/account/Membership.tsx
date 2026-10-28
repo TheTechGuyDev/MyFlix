@@ -1,9 +1,10 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { useState } from "react";
-import { Field, PrimaryButton } from "@/components/auth/ui";
-import { billingHistory, cancelMembership, changePlanNow, restartMembership, updatePaymentMethod, type PaymentMethod } from "@/lib/mock-auth";
+import { Suspense, useState } from "react";
+import { Alert, PrimaryButton } from "@/components/auth/ui";
+import PaymentForm from "@/components/auth/PaymentForm";
+import { billingHistory, cancelMembership, changePlanNow, restartMembership, updatePaymentMethod } from "@/lib/account";
 import { getPlan, naira, plans, type PlanId } from "@/lib/plans";
 import { Card, PageTitle, fmtDate, useAccountCtx } from "./AccountShell";
 import { methodLabel } from "./Overview";
@@ -20,16 +21,18 @@ export function ChangePlan() {
 
   const confirm = async () => {
     setLoading(true);
-    await changePlanNow(sel);
+    const r = await changePlanNow(sel);
     setLoading(false);
+    if (!r.ok) return toast(r.error);
     refresh();
-    toast(`You're now on the ${chosen.name} plan.`);
+    if (r.data.when === "payment") return router.push("/account/payment?pay=1");
+    toast(r.data.when === "now" ? `You're now on the ${chosen.name} plan.` : `${chosen.name} starts on ${fmtDate(r.data.at)}.`);
     router.push("/account");
   };
 
   return (
     <div>
-      <PageTitle title="Change plan" back="/account" sub="Switch anytime. Changes take effect right away." />
+      <PageTitle title="Change plan" back="/account" sub="Upgrades start right away. Downgrades start at your next renewal." />
       <div className="grid gap-3 sm:grid-cols-2">
         {plans.map((p) => {
           const on = sel === p.id;
@@ -69,71 +72,54 @@ export function ChangePlan() {
 
 /* ---------------- Payment method ---------------- */
 export function ManagePayment() {
-  const { account, refresh, toast } = useAccountCtx();
-  const router = useRouter();
-  const [method, setMethod] = useState<PaymentMethod>(account.payment?.method ?? "card");
-  const [num, setNum] = useState("");
-  const [exp, setExp] = useState("");
-  const [cvv, setCvv] = useState("");
-  const [err, setErr] = useState<Record<string, string>>({});
+  const { account } = useAccountCtx();
+  const [err, setErr] = useState("");
   const [loading, setLoading] = useState(false);
+  const p = account.payment;
+  const due = !account.hasAccess || account.status === "past_due";
+  const [payNow, setPayNow] = useState(() => due || (typeof window !== "undefined" && /[?&](pay|reference|trxref)=/.test(location.search)));
 
-  const save = async () => {
-    const digits = num.replace(/\D/g, "");
-    if (method === "card") {
-      const e: Record<string, string> = {};
-      if (digits.length < 16) e.num = "Please enter a valid card number.";
-      if (!/^\d{2}\/\d{2}$/.test(exp)) e.exp = "Use MM/YY.";
-      if (!/^\d{3,4}$/.test(cvv)) e.cvv = "Please enter a valid CVV.";
-      setErr(e);
-      if (Object.keys(e).length) return;
-    }
+  const updateCard = async () => {
+    setErr("");
     setLoading(true);
-    await updatePaymentMethod(method, method === "card" ? digits.slice(-4) : undefined);
+    const r = await updatePaymentMethod();
     setLoading(false);
-    refresh();
-    toast("Payment method updated.");
-    router.push("/account");
+    if (!r.ok) return setErr(r.error);
+    if (r.data.url) window.location.href = r.data.url;
   };
 
   return (
-    <div>
-      <PageTitle title="Manage payment method" back="/account" sub={`Current: ${methodLabel(account.payment?.method, account.payment?.last4)}`} />
-      <Card>
-        <div className="grid grid-cols-3 gap-2">
-          {(["card", "transfer", "ussd"] as PaymentMethod[]).map((m) => (
-            <button key={m} onClick={() => setMethod(m)} className={`rounded-lg border-2 px-3 py-3 text-sm font-semibold ${method === m ? "border-brand bg-brand/5" : "border-neutral-200 hover:border-neutral-400"}`}>
-              {m === "card" ? "Card" : m === "transfer" ? "Bank transfer" : "USSD"}
-            </button>
-          ))}
+    <div className="space-y-6">
+      <PageTitle title="Payment method" back="/account" sub="Payments are processed securely by Paystack." />
+      {due && <Alert>{account.status === "past_due" ? "Your last payment didn't go through. Pay now to keep watching." : "Your membership isn't active. Pay to start watching."}</Alert>}
+      <Card title="Saved for renewals">
+        {p?.last4 ? (
+          <p className="text-lg font-semibold">{(p.cardType ?? "Card").trim()} ending {p.last4}</p>
+        ) : (
+          <p className="text-neutral-600">{p ? methodLabel(p.method) : "No saved card."} Renewals by bank transfer or USSD are paid from the reminder we send before each renewal.</p>
+        )}
+        {p && !p.reusable && p.last4 && <p className="mt-1 text-sm text-neutral-500">This card can&apos;t be charged automatically. We&apos;ll remind you before each renewal.</p>}
+        {err && <p className="mt-3 text-sm text-danger">{err}</p>}
+        <div className="mt-5 flex flex-wrap gap-3">
+          <PrimaryButton onClick={updateCard} loading={loading} className="!h-12 !w-auto !px-6 !text-base">{p?.last4 ? "Change card" : "Add a card"}</PrimaryButton>
+          {!payNow && <button onClick={() => setPayNow(true)} className="h-12 rounded border border-neutral-400 px-6 font-semibold hover:bg-neutral-100">Pay now</button>}
         </div>
-        <div className="mt-5 space-y-3">
-          {method === "card" ? (
-            <>
-              <Field label="Card number" inputMode="numeric" value={num} onChange={(e) => setNum(e.target.value.replace(/\D/g, "").slice(0, 19).replace(/(.{4})/g, "$1 ").trim())} error={err.num} />
-              <div className="grid grid-cols-2 gap-3">
-                <Field label="Expiry (MM/YY)" inputMode="numeric" value={exp} onChange={(e) => { const d = e.target.value.replace(/\D/g, "").slice(0, 4); setExp(d.length > 2 ? `${d.slice(0, 2)}/${d.slice(2)}` : d); }} error={err.exp} />
-                <Field label="CVV" inputMode="numeric" value={cvv} onChange={(e) => setCvv(e.target.value.replace(/\D/g, "").slice(0, 4))} error={err.cvv} />
-              </div>
-            </>
-          ) : (
-            <p className="rounded-lg bg-neutral-100 p-4 text-sm text-neutral-700">
-              {method === "transfer"
-                ? "Each month we'll send you a one-time account number to transfer your subscription fee to."
-                : "Each month we'll send you a USSD code to dial from the phone linked to your bank account."}
-            </p>
-          )}
-        </div>
-        <PrimaryButton onClick={save} loading={loading} className="mt-5 !h-12 !text-base sm:!w-56">Save</PrimaryButton>
-        <p className="mt-3 text-xs text-neutral-500">Demo mode: no card details are stored. Live payments connect with the backend.</p>
+        <p className="mt-3 text-xs text-neutral-500">To check a new card, Paystack charges ₦50 and we refund it straight away.</p>
       </Card>
+      {payNow && (
+        <Card title={due ? "Pay to continue" : "Pay now"}>
+          <Suspense>
+            <PaymentForm returnTo="/account/payment/" next="/account" />
+          </Suspense>
+        </Card>
+      )}
     </div>
   );
 }
 
 /* ---------------- Billing history ---------------- */
 export function BillingHistory() {
-  const { account, toast } = useAccountCtx();
+  const { account } = useAccountCtx();
   const rows = billingHistory(account);
   return (
     <div>
@@ -157,11 +143,11 @@ export function BillingHistory() {
                 {rows.map((r) => (
                   <tr key={r.id} className="border-t border-neutral-200">
                     <td className="py-3">{fmtDate(r.date)}</td>
-                    <td className="py-3">MyFlix {getPlan(r.planId)?.name} (monthly)</td>
+                    <td className="py-3">MyFlix {getPlan(r.planId)?.name}{r.status === "Refunded" ? " (refunded)" : ""}</td>
                     <td className="py-3">{methodLabel(r.method, r.last4)}</td>
                     <td className="py-3 text-right font-semibold">{naira(r.amount)}</td>
                     <td className="py-3 text-right">
-                      <button onClick={() => toast(`Receipt ${r.id} will be emailed to ${account.email}.`)} className="font-semibold text-brand hover:underline">Receipt</button>
+                      <button onClick={() => printReceipt(r, account.email)} className="font-semibold text-brand hover:underline">Receipt</button>
                     </td>
                   </tr>
                 ))}
@@ -183,9 +169,9 @@ export function CancelMembership() {
 
   const act = async () => {
     setLoading(true);
-    if (cancelled) await restartMembership();
-    else await cancelMembership();
+    const r = cancelled ? await restartMembership() : await cancelMembership();
     setLoading(false);
+    if (!r.ok) return toast(r.error);
     refresh();
     toast(cancelled ? "Welcome back! Your membership has been restarted." : "Your membership has been cancelled.");
     router.push("/account");
@@ -219,4 +205,19 @@ export function CancelMembership() {
       </Card>
     </div>
   );
+}
+
+/** Opens a printable receipt (save as PDF from the print dialog). */
+function printReceipt(r: ReturnType<typeof billingHistory>[number], email: string) {
+  const w = window.open("", "_blank", "width=600,height=700");
+  if (!w) return;
+  w.document.write(`<html><head><title>MyFlix receipt ${r.id}</title><style>body{font-family:Arial,sans-serif;padding:32px;color:#111}h1{margin:0 0 4px}td{padding:6px 0}.t{border-top:1px solid #ccc;font-weight:bold}</style></head><body>
+<h1>MY<span style="color:#0e9f62">FLIX</span></h1><p>Receipt ${r.id}</p>
+<table width="100%"><tr><td>Date</td><td align="right">${new Date(r.date).toLocaleDateString("en-NG", { dateStyle: "long" })}</td></tr>
+<tr><td>Billed to</td><td align="right">${email}</td></tr>
+<tr><td>Description</td><td align="right">MyFlix ${getPlan(r.planId)?.name ?? r.planId} membership</td></tr>
+<tr><td>Payment</td><td align="right">${r.method}${r.last4 ? " ending " + r.last4 : ""}</td></tr>
+<tr class="t"><td class="t">Total</td><td class="t" align="right">₦${r.amount.toLocaleString("en-NG")}${r.status === "Refunded" ? " (refunded)" : ""}</td></tr></table>
+<p style="margin-top:32px;font-size:12px;color:#666">MyFlix Nigeria · help@myflix.ng</p><script>print()</script></body></html>`);
+  w.document.close();
 }

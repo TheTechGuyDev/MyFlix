@@ -1,17 +1,12 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { getAccount, type Account } from "./mock-auth";
+import { getAccount, type Account } from "./account";
+import { useStore } from "./store";
 
-/** Reads the signed-in account after mount (avoids hydration mismatch). */
+/** The signed-in account, re-rendering whenever it changes. `ready` is false until start-up finishes. */
 export function useAccount() {
-  const [account, setAccount] = useState<Account | null>(null);
-  const [ready, setReady] = useState(false);
-
-  useEffect(() => {
-    setAccount(getAccount());
-    setReady(true);
-  }, []);
-
-  return { account, setAccount, ready };
+  const ready = useStore((s) => s.ready);
+  useStore((s) => [s.account, s.profiles, s.billing, s.devices]);
+  const account: Account | null = ready ? getAccount() : null;
+  return { account, ready, setAccount: (_: Account | null) => void _ };
 }

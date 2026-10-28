@@ -53,6 +53,24 @@ serve(async (req) => {
     return json({ authorization_url: tx.authorization_url, access_code: tx.access_code, reference, amount: q.amount });
   }
 
+  if (body.action === "card") {
+    // Change the saved card: Paystack checks it with a ₦50 charge that we refund right away
+    const { data: acc } = await admin.from("accounts").select("email").eq("id", user.id).single();
+    if (!acc) throw new HttpError(404, "Account not found.");
+    const reference = `MYF-C-${Date.now().toString(36).toUpperCase()}-${crypto.randomUUID().slice(0, 6).toUpperCase()}`;
+    await admin.from("payments").insert({ account_id: user.id, email: acc.email, reference, kind: "card_update", amount: 50, months: 0 });
+    const tx = await paystack("/transaction/initialize", {
+      email: acc.email,
+      amount: 5000,
+      currency: "NGN",
+      reference,
+      callback_url: String(body.callback_url ?? `${site()}/account/payment/`),
+      channels: ["card"],
+      metadata: { account_id: user.id, purpose: "card_update" },
+    });
+    return json({ authorization_url: tx.authorization_url, reference });
+  }
+
   if (body.action === "verify") {
     const reference = String(body.reference ?? "");
     const { data: pay } = await admin.from("payments").select("account_id, status").eq("reference", reference).single();

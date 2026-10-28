@@ -3,13 +3,13 @@
 import Link from "next/link";
 import Avatar from "@/components/auth/Avatar";
 import { getPlan, naira } from "@/lib/plans";
-import { devicesOf } from "@/lib/mock-auth";
+import { devicesOf } from "@/lib/account";
 import { Card, LinkRow, PageTitle, fmtDate, useAccountCtx } from "./AccountShell";
 import { DataMeter } from "./Extras";
 import { naira as nairaFmt } from "@/lib/plans";
 
 export const methodLabel = (m?: string, last4?: string) =>
-  m === "card" ? `Card ending in ${last4 ?? "••••"}` : m === "transfer" ? "Bank transfer" : m === "ussd" ? "USSD" : "None";
+  m === "card" ? `Card ending in ${last4 ?? "••••"}` : m === "transfer" ? "Bank transfer" : m === "ussd" ? "USSD" : m === "bank" ? "Bank account" : m === "credit" ? "Account credit" : "None";
 
 export default function Overview() {
   const { account } = useAccountCtx();

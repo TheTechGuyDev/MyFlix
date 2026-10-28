@@ -2,7 +2,7 @@
 
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
-import { choosePlan, getAccount } from "@/lib/mock-auth";
+import { choosePlan, getAccount } from "@/lib/account";
 import { annualPrice, naira, plans, type PlanId } from "@/lib/plans";
 import { PrimaryButton } from "./ui";
 import { StepLabel } from "./SignupShell";

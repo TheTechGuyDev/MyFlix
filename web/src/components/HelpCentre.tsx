@@ -3,9 +3,9 @@
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import Logo from "@/components/landing/Logo";
-import { createTicket, ticketsFor } from "@/lib/extras";
+import { createTicket, replyTicket, ticketsFor, type Ticket } from "@/lib/extras";
 import { faqs } from "@/lib/landing-data";
-import { getAccount } from "@/lib/mock-auth";
+import { getAccount } from "@/lib/account";
 import { siteSettings } from "@/lib/site-settings";
 
 const more = [
@@ -16,7 +16,6 @@ const more = [
   { question: "How do I invite a friend?", answer: ["Go to Account, Invite friends. When a friend joins with your code and pays, you both get a free month."] },
 ];
 
-type Ticket = ReturnType<typeof ticketsFor>[number];
 
 export default function HelpCentre() {
   const [q, setQ] = useState("");
@@ -29,30 +28,46 @@ export default function HelpCentre() {
   const [err, setErr] = useState("");
   const [sent, setSent] = useState("");
   const [mine, setMine] = useState<Ticket[]>([]);
+  const [busy, setBusy] = useState(false);
+  const [reply, setReply] = useState<Record<string, string>>({});
   const site = siteSettings();
+  const signedIn = Boolean(getAccount());
 
   useEffect(() => {
     const a = getAccount();
     if (a) {
       setEmail(a.email);
       setName(a.profiles[0]?.name ?? "");
-      setMine(ticketsFor(a.email));
+      ticketsFor().then(setMine);
     }
   }, []);
 
   const all = useMemo(() => [...faqs, ...more], []);
   const list = all.filter((f) => !q.trim() || (f.question + f.answer.join(" ")).toLowerCase().includes(q.trim().toLowerCase()));
 
-  const submit = (e: React.FormEvent) => {
+  const submit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!/^\S+@\S+\.\S+$/.test(email)) return setErr("Enter a valid email so we can reply.");
     if (subject.trim().length < 4 || body.trim().length < 10) return setErr("Tell us a little more about the problem.");
-    const id = createTicket({ email: email.trim().toLowerCase(), name: name.trim() || email.split("@")[0], category, subject: subject.trim(), body: body.trim() });
-    setErr("");
-    setSent(id);
-    setSubject("");
-    setBody("");
-    setMine(ticketsFor(email.trim().toLowerCase()));
+    setBusy(true);
+    try {
+      const id = await createTicket({ category, subject: subject.trim(), body: body.trim() });
+      setErr("");
+      setSent(id);
+      setSubject("");
+      setBody("");
+      setMine(await ticketsFor());
+    } catch (x) {
+      setErr(x instanceof Error ? x.message : "Couldn't send. Try again.");
+    }
+    setBusy(false);
+  };
+
+  const sendReply = async (id: string) => {
+    const text = (reply[id] ?? "").trim();
+    if (!text) return;
+    await replyTicket(id, name || email, text);
+    setReply({ ...reply, [id]: "" });
+    setMine(await ticketsFor());
   };
 
   return (
@@ -85,30 +100,43 @@ export default function HelpCentre() {
         </section>
 
         <section className="grid gap-8 md:grid-cols-[1fr_320px]">
+          {!signedIn ? (
+            <div className="space-y-3 rounded-xl border border-neutral-200 p-5">
+              <h2 className="text-xl font-bold">Contact us</h2>
+              <p className="text-neutral-600">Sign in so we can see your account and reply to you here. Can&apos;t sign in? Email us at <a className="font-semibold text-brand" href={`mailto:${site.supportEmail}`}>{site.supportEmail}</a>.</p>
+              <Link href="/login" className="inline-block h-11 rounded bg-brand px-6 pt-2.5 font-semibold text-white hover:bg-brand-hover">Sign in</Link>
+            </div>
+          ) : (
           <form onSubmit={submit} className="space-y-3 rounded-xl border border-neutral-200 p-5">
             <h2 className="text-xl font-bold">Contact us</h2>
             <p className="text-sm text-neutral-600">We reply within a few hours, 8am to 10pm every day.</p>
             {sent && <p className="rounded bg-emerald-50 p-3 text-sm text-emerald-800">Thanks! Your request <b>{sent}</b> has been sent. We&apos;ll email you, and you can track it here.</p>}
             {err && <p className="rounded bg-amber-50 p-3 text-sm text-amber-900">{err}</p>}
-            <div className="grid gap-3 sm:grid-cols-2">
-              <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Your name" aria-label="Your name" className="h-11 rounded border border-neutral-300 px-3" />
-              <input value={email} onChange={(e) => setEmail(e.target.value)} type="email" placeholder="Email" aria-label="Email" className="h-11 rounded border border-neutral-300 px-3" />
-            </div>
+            <p className="text-sm text-neutral-500">We&apos;ll reply to {email}.</p>
             <select value={category} onChange={(e) => setCategory(e.target.value as typeof category)} aria-label="Topic" className="h-11 w-full rounded border border-neutral-300 bg-white px-3">
               {["Playback", "Billing", "Account", "Content", "Other"].map((c) => <option key={c}>{c}</option>)}
             </select>
             <input value={subject} onChange={(e) => setSubject(e.target.value)} placeholder="Subject" aria-label="Subject" className="h-11 w-full rounded border border-neutral-300 px-3" />
             <textarea value={body} onChange={(e) => setBody(e.target.value)} placeholder="Describe the problem. Include your device and network if it's about playback." aria-label="Message" className="min-h-32 w-full rounded border border-neutral-300 p-3" />
-            <button className="h-11 rounded bg-brand px-6 font-semibold text-white hover:bg-brand-hover">Send message</button>
+            <button disabled={busy} className="h-11 rounded bg-brand px-6 font-semibold text-white hover:bg-brand-hover disabled:opacity-60">{busy ? "Sending…" : "Send message"}</button>
           </form>
+          )}
           <aside className="space-y-4">
             <div className="rounded-xl bg-neutral-100 p-5">
-              <p className="font-bold">Call us</p>
-              <a href={`tel:${site.supportPhone.replace(/\s/g, "")}`} className="text-lg text-brand">{site.supportPhone}</a>
-              <p className="mt-3 font-bold">Email</p>
+              {site.supportPhone && (
+                <>
+                  <p className="font-bold">Call us</p>
+                  <a href={`tel:${site.supportPhone.replace(/\s/g, "")}`} className="mb-3 block text-lg text-brand">{site.supportPhone}</a>
+                </>
+              )}
+              <p className="font-bold">Email</p>
               <a href={`mailto:${site.supportEmail}`} className="text-brand">{site.supportEmail}</a>
-              <p className="mt-3 font-bold">WhatsApp</p>
-              <a href="https://wa.me/2348000000000" className="text-brand">Chat with support</a>
+              {site.supportWhatsapp && (
+                <>
+                  <p className="mt-3 font-bold">WhatsApp</p>
+                  <a href={`https://wa.me/${site.supportWhatsapp.replace(/\D/g, "")}`} className="text-brand">Chat with support</a>
+                </>
+              )}
             </div>
             {mine.length > 0 && (
               <div className="rounded-xl border border-neutral-200 p-5">
@@ -118,7 +146,13 @@ export default function HelpCentre() {
                     <li key={t.id}>
                       <p className="font-semibold">{t.subject}</p>
                       <p className="text-neutral-500">{t.id} · <span className={t.status === "resolved" ? "text-emerald-700" : "text-amber-700"}>{t.status === "pending" ? "replied" : t.status}</span></p>
-                      {t.messages.filter((m) => m.from === "staff").slice(-1).map((m) => <p key={m.at} className="mt-1 rounded bg-neutral-100 p-2 text-neutral-700">{m.author}: {m.body}</p>)}
+                      {t.messages.filter((m) => m.from_staff).slice(-1).map((m) => <p key={m.created_at} className="mt-1 rounded bg-neutral-100 p-2 text-neutral-700">{m.author}: {m.body}</p>)}
+                      {t.status !== "resolved" && (
+                        <div className="mt-2 flex gap-2">
+                          <input value={reply[t.id] ?? ""} onChange={(e) => setReply({ ...reply, [t.id]: e.target.value })} placeholder="Reply" aria-label={`Reply to ${t.id}`} className="h-9 flex-1 rounded border border-neutral-300 px-2" />
+                          <button onClick={() => sendReply(t.id)} className="rounded bg-neutral-900 px-3 text-white">Send</button>
+                        </div>
+                      )}
                     </li>
                   ))}
                 </ul>

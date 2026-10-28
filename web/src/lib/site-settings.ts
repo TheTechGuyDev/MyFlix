@@ -1,5 +1,7 @@
 "use client";
 
+import { getState } from "./store";
+
 /** Platform settings published from the admin dashboard (maintenance, announcement, sign-ups). */
 export type SiteSettings = {
   platformName: string;
@@ -15,12 +17,15 @@ export type SiteSettings = {
   drmEnabled: boolean;
   screenshotBlock: boolean;
   streamLimitEnforced: boolean;
+  smsEnabled: boolean;
+  emailCodesEnabled: boolean;
+  supportWhatsapp: string;
 };
 
 const defaults: SiteSettings = {
   platformName: "MyFlix",
   supportEmail: "help@myflix.ng",
-  supportPhone: "0800 000 0000",
+  supportPhone: "",
   maintenance: false,
   maintenanceMessage: "MyFlix is getting an upgrade. We'll be back shortly.",
   signupsOpen: true,
@@ -31,14 +36,11 @@ const defaults: SiteSettings = {
   drmEnabled: true,
   screenshotBlock: true,
   streamLimitEnforced: true,
+  smsEnabled: false,
+  emailCodesEnabled: true,
+  supportWhatsapp: "",
 };
 
 export function siteSettings(): SiteSettings {
-  if (typeof window === "undefined") return defaults;
-  try {
-    const raw = localStorage.getItem("myflix.admin.settings");
-    return raw ? { ...defaults, ...JSON.parse(raw) } : defaults;
-  } catch {
-    return defaults;
-  }
+  return { ...defaults, ...(getState().settings as Partial<SiteSettings>) };
 }

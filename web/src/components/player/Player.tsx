@@ -5,8 +5,8 @@ import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { episodesFor, img, type Title } from "@/lib/catalog";
 import { readProgress, writeProgress } from "@/lib/library";
-import { PLAN_MAX_HEIGHT } from "@/lib/streams";
-import { addUsage, logActivity, thisMonth, watchedTodayMinutes } from "@/lib/extras";
+import { getPlan } from "@/lib/plans";
+import { addUsage, flushUsage, loadUsage, logActivity, thisMonth, watchedTodayMinutes } from "@/lib/extras";
 import { Spinner } from "@/components/auth/ui";
 import { claim, deviceName, release, stopStream, type LiveStream } from "@/lib/live";
 import { siteSettings } from "@/lib/site-settings";
@@ -23,6 +23,7 @@ type Props = {
   planId: string;
   prefs: { autoplayNext: boolean; dataUsage: "auto" | "saver" | "hd" | "4k"; subtitleSize: "small" | "medium" | "large"; subtitleBg: "none" | "shadow" | "box"; dailyLimitMinutes?: number; monthlyDataCapGB?: number };
   startAt?: number;
+  streamId: string;
   email: string;
   profileName: string;
   /** Smart TV app: handle exit / episode changes in-page instead of routing. */
@@ -44,7 +45,7 @@ const fmt = (s: number) => {
 };
 const qualityLabel = (h: number) => (h >= 2160 ? "4K" : h >= 1440 ? "1440p" : `${h}p`);
 
-export default function Player({ title, sources, extraSubs = [], intro, season, episode, profileId, planId, prefs, startAt, email, profileName, onExit, onEpisode }: Props) {
+export default function Player({ title, sources, extraSubs = [], intro, season, episode, profileId, planId, prefs, startAt, streamId, email, onExit, onEpisode }: Props) {
   const router = useRouter();
   const tx = useT();
   const wrapRef = useRef<HTMLDivElement>(null);
@@ -63,7 +64,7 @@ export default function Player({ title, sources, extraSubs = [], intro, season, 
     return null;
   }, [isSeries, episode, episodes.length, season, title.seasons]);
 
-  const maxHeight = PLAN_MAX_HEIGHT[planId] ?? 1080;
+  const maxHeight = getPlan(planId)?.maxHeight ?? ({ mobile: 480, basic: 720, standard: 1080, premium: 2160 } as Record<string, number>)[planId] ?? 1080;
 
   const [srcIdx, setSrcIdx] = useState(0);
   const [playing, setPlaying] = useState(false);
@@ -92,7 +93,7 @@ export default function Player({ title, sources, extraSubs = [], intro, season, 
   const [flash, setFlash] = useState<string | null>(null);
   const [sleepAt, setSleepAt] = useState<number | "end" | null>(null);
   const [blocked, setBlocked] = useState<null | "sleep" | "limit" | "still" | "screens" | "stopped">(null);
-  const [streamId] = useState(() => Math.random().toString(36).slice(2, 10));
+
   const [others, setOthers] = useState<LiveStream[]>([]);
   const [screenLimit, setScreenLimit] = useState(1);
   const [castTo, setCastTo] = useState<string | null>(null);
@@ -104,25 +105,32 @@ export default function Player({ title, sources, extraSubs = [], intro, season, 
   const capWarned = useRef(false);
 
   /* ---------------- Concurrent streams ---------------- */
-  const claimStream = useCallback(() => {
-    const r = claim({ id: streamId, email, profile: profileName, device: deviceName(), titleId: title.id, title: title.title }, planId);
+  /** Heartbeat + screen-limit check against the database. */
+  const claimStream = useCallback(async () => {
+    const r = await claim(streamId, profileId, deviceName(), title.id);
     if (r.ok) return true;
     videoRef.current?.pause();
-    if (r.limit === -1) setBlocked("stopped");
-    else {
-      setOthers(r.others);
-      setScreenLimit(r.limit);
+    if (r.reason === "stopped") setBlocked("stopped");
+    else if (r.reason === "screens") {
+      setOthers(r.others ?? []);
+      setScreenLimit(r.limit ?? 1);
       setBlocked("screens");
-    }
+    } else if (r.reason === "membership") router.replace("/account/payment");
+    else if (r.reason === "suspended") router.replace("/login?suspended=1");
     return false;
-  }, [streamId, email, profileName, title.id, title.title, planId]);
+  }, [streamId, profileId, title.id, router]);
 
   useEffect(() => {
     if (!playing) return;
-    if (!claimStream()) return;
-    const id = setInterval(claimStream, 10000);
+    const id = setInterval(() => void claimStream(), 10000);
     return () => clearInterval(id);
   }, [playing, claimStream]);
+
+  // Usage meter: load this month's totals; send the rest when leaving
+  useEffect(() => {
+    void loadUsage(profileId);
+    return () => flushUsage(profileId);
+  }, [profileId]);
 
   useEffect(() => () => release(streamId), [streamId]);
 
@@ -682,7 +690,7 @@ export default function Player({ title, sources, extraSubs = [], intro, season, 
                       <span className="block font-semibold">{o.profile} on {o.device}</span>
                       <span className="block text-sm text-white/60">Watching {o.title}</span>
                     </span>
-                    <button onClick={() => { stopStream(o.id, "member"); setOthers((l) => l.filter((x) => x.id !== o.id)); }} className="rounded bg-white/15 px-3 py-1.5 text-sm font-semibold hover:bg-white/25">Stop</button>
+                    <button onClick={async () => { await stopStream(o.id); setOthers((l) => l.filter((x) => x.id !== o.id)); }} className="rounded bg-white/15 px-3 py-1.5 text-sm font-semibold hover:bg-white/25">Stop</button>
                   </li>
                 ))}
               </ul>
@@ -705,7 +713,7 @@ export default function Player({ title, sources, extraSubs = [], intro, season, 
               <button onClick={() => { setBlocked(null); videoRef.current?.play(); }} className="rounded bg-white px-6 py-2 font-semibold text-ink">Keep Watching</button>
             )}
             {(blocked === "screens" || blocked === "stopped") && (
-              <button onClick={() => { if (blocked === "stopped") { release(streamId); location.reload(); return; } setBlocked(null); if (claimStream()) videoRef.current?.play(); }} className="rounded bg-white px-6 py-2 font-semibold text-ink">Try Again</button>
+              <button onClick={async () => { if (blocked === "stopped") { release(streamId); location.reload(); return; } if (await claimStream()) { setBlocked(null); videoRef.current?.play(); } }} className="rounded bg-white px-6 py-2 font-semibold text-ink">Try Again</button>
             )}
             {blocked === "screens" && (
               <button onClick={() => router.push("/account/plan")} className="rounded border border-white/60 px-6 py-2">Upgrade Plan</button>

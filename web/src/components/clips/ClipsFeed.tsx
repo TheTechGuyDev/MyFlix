@@ -5,10 +5,13 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { img, type Title } from "@/lib/catalog";
-import { baseLaughs, clipSource, clipsFor, compact, reactionsOf, toggleReaction, type Clip } from "@/lib/clips";
+import Hls from "hls.js";
+import { clipsFor, reactionsOf, toggleReaction, type Clip } from "@/lib/clips";
+import { deviceName } from "@/lib/live";
+import { resolveMedia } from "@/lib/resolve-media";
 import { useT } from "@/lib/i18n";
 import { useLibrary } from "@/lib/library";
-import { getAccount, getActiveProfileId, settingsOf, type Profile } from "@/lib/mock-auth";
+import { getAccount, getActiveProfileId, settingsOf, type Profile } from "@/lib/account";
 
 export default function ClipsFeed() {
   const router = useRouter();
@@ -19,15 +22,16 @@ export default function ClipsFeed() {
   const [reacts, setReacts] = useState<string[]>([]);
   const [notice, setNotice] = useState("");
   const feedRef = useRef<HTMLDivElement>(null);
+  const [streamId] = useState(() => `clips-${crypto.randomUUID()}`);
 
   useEffect(() => {
     const acc = getAccount();
     if (!acc) return router.replace("/login");
-    if (!acc.payment) return router.replace("/signup/payment");
+    if (!acc.hasAccess) return router.replace("/account/payment");
     const p = acc.profiles.find((x) => x.id === getActiveProfileId());
     if (!p) return router.replace("/profiles");
     setProfile(p);
-    setReacts(reactionsOf(p.id));
+    reactionsOf(p.id).then(setReacts);
   }, [router]);
 
   const library = useLibrary(profile?.id ?? null);
@@ -92,6 +96,13 @@ export default function ClipsFeed() {
 
       {notice && <div role="status" className="absolute left-1/2 top-20 z-30 -translate-x-1/2 rounded bg-white px-4 py-2 text-sm font-medium text-ink">{notice}</div>}
 
+      {items.length === 0 && (
+        <div className="flex h-full flex-col items-center justify-center gap-2 px-6 text-center">
+          <p className="text-xl font-bold">No clips yet</p>
+          <p className="text-white/60">Short moments from new titles will show up here.</p>
+          <Link href="/browse" className="mt-3 rounded bg-white px-5 py-2 font-semibold text-black">Browse titles</Link>
+        </div>
+      )}
       <div ref={feedRef} className="h-full snap-y snap-mandatory overflow-y-scroll [scrollbar-width:none]">
         {items.map(({ clip, title }, i) => {
           const on = reacts.includes(clip.id);
@@ -102,21 +113,28 @@ export default function ClipsFeed() {
               <Image src={img(title.image, 400, 700)} alt="" fill sizes="100vw" className="scale-110 object-cover opacity-40 blur-2xl" />
               <div className="relative h-full w-full sm:aspect-[9/16] sm:w-auto sm:max-w-[480px]">
                 {Math.abs(i - active) <= 1 ? (
-                  <ClipVideo clip={clip} title={title} playing={i === active} muted={muted} onTap={() => setMuted(!muted)} />
+                  <ClipVideo clip={clip} title={title} playing={i === active} muted={muted} onTap={() => setMuted(!muted)} profileId={profile.id} streamId={streamId} />
                 ) : (
                   <Image src={img(title.image, 500, 900)} alt="" fill sizes="480px" className="object-cover" />
                 )}
                 {muted && i === active && (
                   <button onClick={() => setMuted(false)} className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 rounded-full bg-black/60 px-4 py-2 text-sm font-semibold">
-                    🔇 {tx("Tap for sound")}
+                    {tx("Tap for sound")}
                   </button>
                 )}
 
                 {/* Actions */}
                 <div className="absolute bottom-28 right-3 z-10 flex flex-col items-center gap-5 text-xs font-semibold">
-                  <button onClick={() => setReacts(toggleReaction(profile.id, clip.id))} className="flex flex-col items-center gap-1" aria-pressed={on}>
+                  <button
+                    onClick={async () => {
+                      await toggleReaction(profile.id, clip.id, on);
+                      setReacts(on ? reacts.filter((x) => x !== clip.id) : [...reacts, clip.id]);
+                    }}
+                    className="flex flex-col items-center gap-1"
+                    aria-pressed={on}
+                  >
                     <span className={`flex h-12 w-12 items-center justify-center rounded-full text-2xl transition ${on ? "scale-110 bg-brand" : "bg-black/50"}`}>😂</span>
-                    {compact(baseLaughs(clip.id) + (on ? 1 : 0))}
+                    {tx("Laugh")}
                   </button>
                   <button onClick={() => library.toggleList(title.id)} className="flex flex-col items-center gap-1">
                     <span className="flex h-12 w-12 items-center justify-center rounded-full bg-black/50 text-2xl">{inList ? "✓" : "+"}</span>
@@ -149,18 +167,38 @@ export default function ClipsFeed() {
   );
 }
 
-function ClipVideo({ clip, title, playing, muted, onTap }: { clip: Clip; title: Title; playing: boolean; muted: boolean; onTap: () => void }) {
+function ClipVideo({ clip, title, playing, muted, onTap, profileId, streamId }: { clip: Clip; title: Title; playing: boolean; muted: boolean; onTap: () => void; profileId: string; streamId: string }) {
   const ref = useRef<HTMLVideoElement>(null);
   const [src, setSrc] = useState<string | null>(null);
   const [progress, setProgress] = useState(0);
 
+  // Ask for the signed stream only when this clip is about to play
   useEffect(() => {
+    if (!playing || src) return;
     let off = false;
-    clipSource(title).then((s) => !off && setSrc(s));
+    resolveMedia(title, 1, 1, { streamId, profileId, device: deviceName() }).then((r) => {
+      if (!off && r.ok && r.media.sources[0]) setSrc(r.media.sources[0]);
+    });
     return () => {
       off = true;
     };
-  }, [title]);
+  }, [playing, src, title, streamId, profileId]);
+
+  useEffect(() => {
+    const v = ref.current;
+    if (!v || !src) return;
+    if (Hls.isSupported() && /\.m3u8(\?|$)/i.test(src)) {
+      const hls = new Hls({ startPosition: clip.start, capLevelToPlayerSize: true });
+      hls.loadSource(src);
+      hls.attachMedia(v);
+      return () => hls.destroy();
+    }
+    v.src = src;
+    return () => {
+      v.removeAttribute("src");
+      v.load();
+    };
+  }, [src, clip.start]);
 
   useEffect(() => {
     const v = ref.current;
@@ -175,19 +213,17 @@ function ClipVideo({ clip, title, playing, muted, onTap }: { clip: Clip; title: 
     <>
       <video
         ref={ref}
-        src={src ?? undefined}
         poster={img(title.image, 500, 900)}
         muted={muted}
         playsInline
+        crossOrigin="anonymous"
         preload="metadata"
         controlsList="nodownload"
         onContextMenu={(e) => e.preventDefault()}
         onClick={onTap}
         onLoadedMetadata={(e) => {
           const v = e.currentTarget;
-          // Keep the clip inside the video's length
-          if (clip.start > v.duration) v.currentTime = 0;
-          else v.currentTime = clip.start;
+          v.currentTime = clip.start > v.duration ? 0 : clip.start;
         }}
         onTimeUpdate={(e) => {
           const v = e.currentTarget;

@@ -11,6 +11,7 @@ export type Plan = {
   downloads: number;
   badge?: string;
   annualDiscount?: number;
+  maxHeight?: number;
 };
 
 export const plans: Plan[] = [
@@ -20,17 +21,10 @@ export const plans: Plan[] = [
   { id: "premium", name: "Premium", price: 5500, resolution: "4K (Ultra HD) + HDR", quality: "Best", devices: "TV, computer, phone, tablet", screens: 4, downloads: 6 },
 ];
 
-/** Plans edited in the admin dashboard override the defaults (hidden plans are removed). */
-if (typeof window !== "undefined") {
-  try {
-    const raw = localStorage.getItem("myflix.admin.plans");
-    if (raw) {
-      const list = (JSON.parse(raw) as (Plan & { active?: boolean })[]).filter((p) => p.active !== false);
-      if (list.length) plans.splice(0, plans.length, ...list);
-    }
-  } catch {
-    /* keep defaults */
-  }
+/** Plans from the database replace these defaults at start-up. */
+export function applyRemotePlans(rows: (Plan & { annual_discount?: number; active?: boolean; max_height?: number })[]) {
+  const list = rows.filter((p) => p.active !== false).map((p) => ({ ...p, annualDiscount: p.annual_discount ?? p.annualDiscount ?? 15, maxHeight: p.max_height }));
+  if (list.length) plans.splice(0, plans.length, ...list);
 }
 
 export const naira = (n: number) => `₦${n.toLocaleString("en-NG")}`;

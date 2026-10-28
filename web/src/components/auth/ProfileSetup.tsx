@@ -2,7 +2,7 @@
 
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
-import { getAccount, MAX_PROFILES, newId, saveProfiles, type Profile } from "@/lib/mock-auth";
+import { getAccount, MAX_PROFILES, newId, saveProfiles, type Profile } from "@/lib/account";
 import Avatar from "./Avatar";
 import { PrimaryButton } from "./ui";
 import { StepLabel } from "./SignupShell";
@@ -18,7 +18,7 @@ export default function ProfileSetup() {
   useEffect(() => {
     const acc = getAccount();
     if (!acc) return router.replace("/signup");
-    if (!acc.payment) return router.replace("/signup/payment");
+    if (!acc.hasAccess) return router.replace("/signup/payment");
     if (acc.profiles.length) {
       setRows((r) => r.map((row, i) => (acc.profiles[i] ? { name: acc.profiles[i].name, kids: acc.profiles[i].kids } : row)));
     }
@@ -33,10 +33,12 @@ export default function ProfileSetup() {
     if (new Set(names).size !== names.length) return setError("Each profile needs a different name.");
     setError("");
     setLoading(true);
-    const profiles: Profile[] = filled.map((r, i) => ({ id: newId(), name: r.name.trim().slice(0, 20), kids: r.kids, avatar: i }));
+    const existing = getAccount()?.profiles ?? [];
+    const profiles: Profile[] = filled.map((r, i) => ({ ...(existing[i] ?? { id: newId(), avatar: i }), name: r.name.trim().slice(0, 20), kids: r.kids }));
     const res = await saveProfiles(profiles);
     setLoading(false);
     if (res.ok) router.push("/profiles");
+    else setError(res.error);
   };
 
   return (

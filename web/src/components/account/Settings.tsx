@@ -15,15 +15,18 @@ import {
   signOutAllDevices,
   updateNotifications,
   confirmPhone,
+  deleteMyAccount,
+  exportMyData,
   requestPhoneCode,
   updateProfile,
   type DataUsage,
   type Maturity,
   type NotificationPrefs,
   type ProfileSettings,
-} from "@/lib/mock-auth";
+} from "@/lib/account";
 import { languages } from "@/lib/landing-data";
-import { enablePush, pushNotify, pushPermission, prettyPhone } from "@/lib/messaging";
+import { enablePush, showSystemNotification, pushPermission, prettyPhone } from "@/lib/messaging";
+import { siteSettings } from "@/lib/site-settings";
 import { Card, LinkRow, PageTitle, Toggle, fmtDate, useAccountCtx } from "./AccountShell";
 
 /* ---------------- Security ---------------- */
@@ -57,7 +60,7 @@ export function Security() {
       const r = await changeEmail(a, b);
       setLoading(false);
       if (!r.ok) return setErr(r.error);
-      toast("Email updated.");
+      toast(`Check ${a} and confirm the change. Your email updates once you do.`);
     } else if (mode === "password") {
       const e = validatePassword(b);
       if (!a) return setErr("Enter your current password.");
@@ -92,7 +95,11 @@ export function Security() {
       <Card>
         <LinkRow label="Email" sub={account.email} onClick={() => open("email")} />
         <LinkRow label="Password" sub="••••••••" onClick={() => open("password")} />
-        <LinkRow label="Mobile phone" sub={account.phone ? `${prettyPhone(account.phone)} · Verified` : "Add a phone number to sign in with SMS codes and recover your account"} onClick={() => open("phone")} />
+        {siteSettings().smsEnabled ? (
+          <LinkRow label="Mobile phone" sub={account.phone ? `${prettyPhone(account.phone)} · Verified` : "Add a phone number to sign in with SMS codes and recover your account"} onClick={() => open("phone")} />
+        ) : (
+          account.phone && <LinkRow label="Mobile phone" sub={`${prettyPhone(account.phone)} · Verified`} onClick={() => undefined} />
+        )}
       </Card>
 
       {mode && (
@@ -143,6 +150,64 @@ export function Security() {
           Sign out of all devices
         </button>
       </Card>
+    </div>
+  );
+}
+
+/* ---------------- Privacy & data ---------------- */
+export function Privacy() {
+  const { account, toast } = useAccountCtx();
+  const router = useRouter();
+  const [busy, setBusy] = useState<"" | "export" | "delete">("");
+  const [confirm, setConfirm] = useState("");
+  const [err, setErr] = useState("");
+
+  const download = async () => {
+    setBusy("export");
+    const r = await exportMyData();
+    setBusy("");
+    if (!r.ok) return toast(r.error);
+    const url = URL.createObjectURL(r.data);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `myflix-data-${new Date().toISOString().slice(0, 10)}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const remove = async () => {
+    setErr("");
+    setBusy("delete");
+    const r = await deleteMyAccount(confirm);
+    setBusy("");
+    if (!r.ok) return setErr(r.error);
+    router.replace("/?deleted=1");
+  };
+
+  return (
+    <div className="space-y-6">
+      <PageTitle title="Privacy & data" sub="See what MyFlix keeps about you, download it, or delete your account." />
+      <Card title="Download your data">
+        <p className="text-sm text-neutral-600">A file with your account details, profiles, My List, ratings, viewing activity, payments, devices and support messages.</p>
+        <PrimaryButton onClick={download} loading={busy === "export"} className="mt-4 !h-11 !w-auto !px-6 !text-base">Download my data</PrimaryButton>
+      </Card>
+      <Card title="Delete your account">
+        <ul className="space-y-1 text-sm text-neutral-600">
+          <li>• Your account, profiles, lists, ratings and viewing history are deleted permanently.</li>
+          <li>• Any time left on your membership ends now and isn&apos;t refunded.</li>
+          <li>• Receipts are kept without your details because accounting law requires it.</li>
+        </ul>
+        <Field className="mt-4 max-w-md" label={`Type ${account.email} to confirm`} value={confirm} onChange={(e) => setConfirm(e.target.value)} />
+        {err && <p className="mt-2 text-sm text-danger">{err}</p>}
+        <button
+          onClick={remove}
+          disabled={busy === "delete" || confirm.trim().toLowerCase() !== account.email.toLowerCase()}
+          className="mt-4 h-11 rounded bg-danger px-6 font-semibold text-white hover:opacity-90 disabled:opacity-40"
+        >
+          {busy === "delete" ? "Deleting…" : "Delete my account"}
+        </button>
+      </Card>
+      <p className="text-sm text-neutral-500">Read our <Link href="/privacy" className="font-semibold text-brand hover:underline">Privacy Policy</Link> for how we use your information.</p>
     </div>
   );
 }
@@ -214,6 +279,7 @@ export function Notifications() {
 }
 
 function BrowserPush({ email }: { email: string }) {
+  void email;
   const [perm, setPerm] = useState(() => pushPermission());
   return (
     <div className="mt-4 rounded-lg bg-neutral-100 p-4 text-sm">
@@ -226,7 +292,7 @@ function BrowserPush({ email }: { email: string }) {
           <button onClick={async () => setPerm(await enablePush())} className="h-10 rounded bg-brand px-4 font-semibold text-white hover:bg-brand-hover">Turn on notifications</button>
         )}
         {perm === "granted" && (
-          <button onClick={() => pushNotify(email, "MyFlix test notification", "Notifications are working on this device.", "/browse")} className="h-10 rounded border border-neutral-900 px-4 font-semibold">Send a test</button>
+          <button onClick={() => showSystemNotification("MyFlix test notification", "Notifications are working on this device.", "/browse")} className="h-10 rounded border border-neutral-900 px-4 font-semibold">Send a test</button>
         )}
       </div>
     </div>
@@ -246,7 +312,7 @@ export function ProfilesList() {
             <Link key={p.id} href={`/account/profile?id=${p.id}`} className="flex items-center gap-4 border-t border-neutral-200 py-3 first:border-t-0 hover:bg-neutral-50">
               <Avatar index={p.avatar} kids={p.kids} className="h-12 w-12" />
               <span className="flex-1">
-                <span className="block font-semibold">{p.name} {s.pin && <span className="ml-1 text-xs text-neutral-500">🔒 PIN</span>}</span>
+                <span className="block font-semibold">{p.name} {p.hasPin && <span className="ml-1 text-xs text-neutral-500">PIN on</span>}</span>
                 <span className="block text-sm text-neutral-500">{s.language} · Maturity {s.maturity} · Data {s.dataUsage}</span>
               </span>
               <svg viewBox="0 0 24 24" className="h-5 w-5 text-neutral-400" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="m9 5 7 7-7 7" /></svg>
@@ -279,8 +345,8 @@ export function ProfileSettingsPage() {
   const params = useSearchParams();
   const profile = account.profiles.find((p) => p.id === params.get("id"));
   const [s, setS] = useState<ProfileSettings | null>(profile ? settingsOf(profile) : null);
-  const [pinOn, setPinOn] = useState(Boolean(profile?.settings?.pin));
-  const [pin, setPin] = useState(profile?.settings?.pin ?? "");
+  const [pinOn, setPinOn] = useState(Boolean(profile?.hasPin));
+  const [pin, setPin] = useState("");
   const [err, setErr] = useState("");
   const [loading, setLoading] = useState(false);
 
@@ -288,11 +354,18 @@ export function ProfileSettingsPage() {
   const patch = (p: Partial<ProfileSettings>) => setS({ ...s, ...p });
 
   const save = async () => {
-    if (pinOn && !/^\d{4}$/.test(pin)) return setErr("Your PIN must be 4 digits.");
+    if (pinOn && !profile.hasPin && !/^\d{4}$/.test(pin)) return setErr("Your PIN must be 4 digits.");
+    if (pinOn && pin && !/^\d{4}$/.test(pin)) return setErr("Your PIN must be 4 digits.");
     setErr("");
     setLoading(true);
-    await updateProfile({ ...profile, settings: { ...s, pin: pinOn ? pin : undefined } });
+    const settings: Partial<ProfileSettings> = { ...s };
+    delete settings.pin;
+    if (pinOn && pin) settings.pin = pin; // new or changed PIN
+    else if (!pinOn && profile.hasPin) settings.pin = undefined; // remove PIN
+    const r = await updateProfile({ ...profile, settings });
     setLoading(false);
+    if (!r.ok) return setErr(r.error);
+    setPin("");
     refresh();
     toast(`${profile.name}'s settings saved.`);
   };

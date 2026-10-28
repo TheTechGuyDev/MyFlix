@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import type { ReactNode } from "react";
 import Logo from "@/components/landing/Logo";
-import { signOut } from "@/lib/mock-auth";
+import { signOut } from "@/lib/account";
 import { useAccount } from "@/lib/use-account";
 
 export default function SignupShell({ children, wide = false }: { children: ReactNode; wide?: boolean }) {

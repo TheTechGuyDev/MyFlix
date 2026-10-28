@@ -2,13 +2,14 @@
 
 import Image from "next/image";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import Logo from "@/components/landing/Logo";
 import Avatar from "@/components/auth/Avatar";
-import type { Profile } from "@/lib/mock-auth";
+import type { Profile } from "@/lib/account";
 import { byId, img, type Tab } from "@/lib/catalog";
 import { BellIcon, ChevronDown, CloseIcon, SearchIcon } from "./icons";
-import { campaignNotices } from "@/lib/extras";
+import { fetchNotices, type Notice } from "@/lib/messaging";
 import { useT } from "@/lib/i18n";
 
 const tabs: { id: Tab; label: string }[] = [
@@ -17,12 +18,6 @@ const tabs: { id: Tab; label: string }[] = [
   { id: "movies", label: "Movies" },
   { id: "new", label: "New & Popular" },
   { id: "mylist", label: "My List" },
-];
-
-const notifications = [
-  { id: "eko-nights", head: "New Season", body: "Eko Nights Season 2 is here", when: "Today" },
-  { id: "the-lecturer", head: "New Arrival", body: "The Lecturer", when: "2 days ago" },
-  { id: "after-sunset", head: "Coming Soon", body: "After Sunset arrives Friday", when: "3 days ago" },
 ];
 
 type Props = {
@@ -50,6 +45,7 @@ function useClickAway(open: boolean, close: () => void) {
 
 export default function Navbar({ tab, onTab, query, onQuery, profile, profiles, onSwitch, onSignOut, onOpenTitle }: Props) {
   const tx = useT();
+  const router = useRouter();
   const [solid, setSolid] = useState(false);
   const [searchOpen, setSearchOpen] = useState(Boolean(query));
   const [menu, setMenu] = useState<null | "browse" | "bell" | "profile">(null);
@@ -71,12 +67,21 @@ export default function Navbar({ tab, onTab, query, onQuery, profile, profiles, 
     if (searchOpen) inputRef.current?.focus();
   }, [searchOpen]);
 
-  const [fromAdmin, setFromAdmin] = useState<ReturnType<typeof campaignNotices>>([]);
-  useEffect(() => setFromAdmin(campaignNotices()), []);
-  const allNotices = [
-    ...fromAdmin.filter((c) => c.titleId && byId(c.titleId)).map((c) => ({ id: c.titleId!, head: c.head, body: c.body, when: c.at ? new Date(c.at).toLocaleDateString("en-NG", { day: "numeric", month: "short" }) : "" })),
-    ...notifications,
-  ].filter((n, i, arr) => byId(n.id) && arr.findIndex((x) => x.head === n.head && x.id === n.id) === i);
+  const [notices, setNotices] = useState<Notice[]>([]);
+  useEffect(() => {
+    fetchNotices().then(setNotices);
+  }, []);
+  const seenKey = `myflix.bellSeen.${profile.id}`;
+  const [seen, setSeen] = useState(0);
+  useEffect(() => {
+    try {
+      setSeen(Number(localStorage.getItem(seenKey) ?? "0"));
+    } catch {
+      /* ignore */
+    }
+  }, [seenKey]);
+  const unread = notices.filter((n) => n.id > seen).length;
+  const allNotices = notices.map((n) => ({ key: n.id, id: n.title_id ?? "", head: n.head, body: n.body, link: n.link, when: new Date(n.created_at).toLocaleDateString("en-NG", { day: "numeric", month: "short" }) }));
 
   const visibleTabs = profile.kids ? tabs.filter((t) => t.id !== "new") : tabs;
 
@@ -154,22 +159,48 @@ export default function Navbar({ tab, onTab, query, onQuery, profile, profiles, 
 
           {/* Notifications */}
           <div ref={bellRef} className="relative hidden sm:block">
-            <button onClick={() => setMenu(menu === "bell" ? null : "bell")} aria-label="Notifications" className="relative p-1">
+            <button
+              onClick={() => {
+                setMenu(menu === "bell" ? null : "bell");
+                if (notices[0]) {
+                  setSeen(notices[0].id);
+                  try {
+                    localStorage.setItem(seenKey, String(notices[0].id));
+                  } catch {
+                    /* ignore */
+                  }
+                }
+              }}
+              aria-label="Notifications"
+              className="relative p-1"
+            >
               <BellIcon className="h-6 w-6" />
-              <span className="absolute -right-0.5 -top-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-brand px-1 text-[10px] font-bold">
-                {allNotices.length}
-              </span>
+              {unread > 0 && (
+                <span className="absolute -right-0.5 -top-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-brand px-1 text-[10px] font-bold">
+                  {unread}
+                </span>
+              )}
             </button>
             {menu === "bell" && (
               <ul className="absolute right-0 top-11 w-80 border-t-2 border-white bg-black/95 text-sm">
+                {allNotices.length === 0 && <li className="p-4 text-white/60">No notifications yet.</li>}
                 {allNotices.map((n) => {
-                  const t = byId(n.id)!;
+                  const t = n.id ? byId(n.id) : undefined;
                   return (
-                    <li key={n.id + n.head}>
-                      <button onClick={() => { onOpenTitle(n.id); close(); }} className="flex w-full gap-3 border-b border-white/10 p-3 text-left hover:bg-white/5">
-                        <span className="relative h-16 w-28 shrink-0 overflow-hidden rounded">
-                          <Image src={img(t.image, 240, 135)} alt="" fill sizes="112px" className="object-cover" />
-                        </span>
+                    <li key={n.key}>
+                      <button
+                        onClick={() => {
+                          close();
+                          if (t) onOpenTitle(t.id);
+                          else if (n.link) router.push(n.link);
+                        }}
+                        className="flex w-full gap-3 border-b border-white/10 p-3 text-left hover:bg-white/5"
+                      >
+                        {t && (
+                          <span className="relative h-16 w-28 shrink-0 overflow-hidden rounded">
+                            <Image src={img(t.image, 240, 135)} alt="" fill sizes="112px" className="object-cover" />
+                          </span>
+                        )}
                         <span>
                           <span className="block font-semibold">{n.head}</span>
                           <span className="block text-white/80">{n.body}</span>

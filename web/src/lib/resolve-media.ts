@@ -1,33 +1,36 @@
 "use client";
 
-import { catalog, episodesFor, type Title, type VideoAsset } from "./catalog";
-import { getMediaUrl } from "./media";
-import { sourcesFor } from "./streams";
+/** Asks the server for this title's signed stream (checks membership and screen limit first). */
+import type { Title } from "./catalog";
+import { fn } from "./supabase";
+import type { Claim } from "./live";
 
-export type ResolvedMedia = { sources: string[]; subs: { label: string; src: string; lang: string }[]; intro?: { start: number; end: number } };
+export type ResolvedMedia = { sources: string[]; subs: { label: string; src: string; lang: string }[]; intro?: { start: number; end: number }; poster?: string };
+export type MediaResult = { ok: true; media: ResolvedMedia } | { ok: false; claim?: Claim; error?: string };
 
-/** Uploaded/URL video + subtitle files from the admin dashboard, with demo streams as fallback. */
-export async function resolveMedia(title: Title, season: number, episode: number): Promise<ResolvedMedia> {
-  const index = catalog.findIndex((t) => t.id === title.id);
-  const ep = title.type === "series" ? episodesFor(title, season).find((e) => e.number === episode) : undefined;
-  const asset: VideoAsset | undefined = title.type === "series" ? ep?.video : title.video;
-  const first: string[] = [];
-  if (asset?.source === "url" && asset.url) first.push(asset.url);
-  if (asset?.source === "upload" && asset.mediaId) {
-    const u = await getMediaUrl(asset.mediaId);
-    if (u) first.push(u);
+export async function resolveMedia(title: Title, season: number, episode: number, ctx: { streamId: string; profileId: string; device: string }): Promise<MediaResult> {
+  try {
+    const r = await fn<{ ok: boolean; sources?: string[]; poster?: string; intro?: { start: number; end: number } | null } & Record<string, unknown>>("playback", {
+      title_id: title.id,
+      season,
+      episode,
+      stream_id: ctx.streamId,
+      profile_id: ctx.profileId,
+      device: ctx.device,
+    });
+    if (!r.ok) return { ok: false, claim: r as unknown as Claim };
+    const introSrc = title.type === "series" ? title.seasonsData?.find((s) => s.number === season)?.episodes.find((e) => e.number === episode) : title;
+    const intro = r.intro ?? (introSrc?.introStart !== undefined && introSrc?.introEnd !== undefined ? { start: introSrc.introStart!, end: introSrc.introEnd! } : undefined);
+    return {
+      ok: true,
+      media: {
+        sources: r.sources ?? [],
+        poster: r.poster,
+        intro: intro ?? undefined,
+        subs: (title.subtitles ?? []).filter((s) => s.url).map((s) => ({ label: s.label, src: s.url!, lang: s.lang })),
+      },
+    };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : "We couldn't start this title." };
   }
-  const subs: ResolvedMedia["subs"] = [];
-  for (const s of title.subtitles ?? []) {
-    const src = s.mediaId ? await getMediaUrl(s.mediaId) : s.url ?? null;
-    if (src) subs.push({ label: s.label, src, lang: s.lang });
-  }
-  const introSrc = ep ?? title;
-  const intro =
-    introSrc.introStart !== undefined && introSrc.introEnd !== undefined
-      ? { start: introSrc.introStart, end: introSrc.introEnd }
-      : title.type === "series"
-        ? { start: 5, end: 35 }
-        : undefined;
-  return { sources: [...first, ...sourcesFor(Math.max(0, index))], subs, intro };
 }

@@ -7,9 +7,11 @@ import Player from "@/components/player/Player";
 import { allowedFor, byId, catalog, episodesFor, featuredFor, img, rowsFor, search, similarTo, type RowDef, type Tab, type Title } from "@/lib/catalog";
 import { langFromName, translator } from "@/lib/i18n";
 import { readProgress, useLibrary } from "@/lib/library";
-import { settingsOf, type Account, type Profile } from "@/lib/mock-auth";
+import { checkProfilePin, getAccount, settingsOf, signOut as accountSignOut, type Account, type Profile } from "@/lib/account";
+import { deviceName } from "@/lib/live";
 import { resolveMedia, type ResolvedMedia } from "@/lib/resolve-media";
-import { checkTvCode, codeExpired, createTvCode, getTvSession, setTvSession, tvAccount, type TvSession } from "@/lib/tv";
+import { useStore } from "@/lib/store";
+import { createTvCode, pollTvCode } from "@/lib/tv";
 import { useSpatialNav } from "./useSpatialNav";
 
 /**
@@ -33,43 +35,65 @@ type Screen =
 
 type Section = "search" | Tab;
 
+const PROFILE_KEY = "myflix.tv.profile";
+
 function TvInner() {
-  const [session, setSession] = useState<TvSession | null>(() => getTvSession());
-  const account = useMemo(() => tvAccount(session), [session]);
-  const [profile, setProfile] = useState<Profile | null>(() => account?.profiles.find((p) => p.id === session?.profileId) ?? null);
+  useStore((st) => [st.account, st.profiles]);
+  const account = getAccount();
+  const [profileId, setProfileId] = useState<string | null>(() => {
+    try {
+      return localStorage.getItem(PROFILE_KEY);
+    } catch {
+      return null;
+    }
+  });
+  const profile = account?.profiles.find((p) => p.id === profileId) ?? null;
   const [screen, setScreen] = useState<Screen>(() => (!account ? { name: "pair" } : profile ? { name: "home" } : { name: "profiles" }));
 
-  const signOut = useCallback(() => {
-    setTvSession(null);
-    setSession(null);
-    setProfile(null);
+  const signOut = async () => {
+    await accountSignOut();
+    try {
+      localStorage.removeItem(PROFILE_KEY);
+    } catch {
+      /* ignore */
+    }
+    setProfileId(null);
     setScreen({ name: "pair" });
-  }, []);
-
-  const onPaired = (s: TvSession) => {
-    setTvSession(s);
-    setSession(s);
-    setScreen({ name: "profiles" });
   };
 
+  const onPaired = useCallback(() => setScreen({ name: "profiles" }), []);
+
   const chooseProfile = (p: Profile) => {
-    const s = settingsOf(p);
-    if (s.pin) return setScreen({ name: "pin", profile: p });
+    if (p.hasPin) return setScreen({ name: "pin", profile: p });
     enter(p);
   };
   const enter = (p: Profile) => {
-    const next = { ...session!, profileId: p.id };
-    setTvSession(next);
-    setSession(next);
-    setProfile(p);
+    try {
+      localStorage.setItem(PROFILE_KEY, p.id);
+    } catch {
+      /* ignore */
+    }
+    setProfileId(p.id);
     setScreen({ name: "home" });
   };
 
+  if (account && !account.hasAccess) {
+    return (
+      <div className="fixed inset-0 flex flex-col items-center justify-center gap-[1em] bg-[#0a0a0b] px-[8vw] text-center text-white [font-size:clamp(14px,1.25vw,30px)]">
+        <p className="font-display text-[4em]">MY<span className="text-brand-bright">FLIX</span></p>
+        <p className="text-[2em] font-bold">Your membership isn&apos;t active</p>
+        <p className="text-[1.2em] text-white/70">On your phone or computer, go to Account and restart your membership. Then come back here.</p>
+        <button data-nav data-nav-default onClick={() => location.reload()} className="rounded bg-white/15 px-[1.4em] py-[0.6em] outline-none focus:bg-white focus:text-black">I&apos;ve paid, try again</button>
+        <button data-nav onClick={signOut} className="text-white/60 underline outline-none focus:text-white">Sign out of this TV</button>
+      </div>
+    );
+  }
+
   return (
     <div className="fixed inset-0 overflow-hidden bg-[#0a0a0b] text-white [font-size:clamp(14px,1.25vw,30px)]">
-      {screen.name === "pair" && <Pairing onPaired={onPaired} />}
-      {screen.name === "profiles" && account && <Profiles account={account} onPick={chooseProfile} onSignOut={signOut} />}
-      {screen.name === "pin" && <PinPad profile={screen.profile} onOk={() => enter(screen.profile)} onBack={() => setScreen({ name: "profiles" })} />}
+      {(screen.name === "pair" || !account) && <Pairing onPaired={onPaired} />}
+      {account && screen.name === "profiles" && <Profiles account={account} onPick={chooseProfile} onSignOut={signOut} />}
+      {account && screen.name === "pin" && <PinPad profile={screen.profile} onOk={() => enter(screen.profile)} onBack={() => setScreen({ name: "profiles" })} />}
       {account && profile && (screen.name === "home" || screen.name === "details" || screen.name === "player") && (
         <Main account={account} profile={profile} screen={screen} setScreen={setScreen} onSwitch={() => setScreen({ name: "profiles" })} onSignOut={signOut} />
       )}
@@ -78,33 +102,48 @@ function TvInner() {
 }
 
 /* ---------------- Pairing ---------------- */
-function Pairing({ onPaired }: { onPaired: (s: TvSession) => void }) {
-  const [code, setCode] = useState(() => createTvCode());
+function Pairing({ onPaired }: { onPaired: () => void }) {
+  const [code, setCode] = useState<{ code: string; secret: string } | null>(null);
   const [left, setLeft] = useState(15 * 60);
+  const [err, setErr] = useState("");
+  const [round, setRound] = useState(0);
   useSpatialNav(useCallback(() => {}, []));
 
   useEffect(() => {
-    const id = setInterval(() => {
-      const hit = checkTvCode(code);
-      if (hit) {
-        clearInterval(id);
-        const app = hit.startsWith("app:");
-        onPaired({ email: app ? hit.slice(4) : hit, source: app ? "app" : "web", pairedAt: new Date().toISOString() });
-        return;
+    let off = false;
+    createTvCode()
+      .then((c) => {
+        if (off) return;
+        setCode(c);
+        setLeft(c.expires_in);
+        setErr("");
+      })
+      .catch(() => !off && setErr("Can't reach MyFlix. Check the TV's internet connection."));
+    return () => {
+      off = true;
+    };
+  }, [round]);
+
+  useEffect(() => {
+    if (!code) return;
+    const tick = setInterval(() => setLeft((l) => (l <= 1 ? (setRound((r) => r + 1), 0) : l - 1)), 1000);
+    const poll = setInterval(async () => {
+      try {
+        const st = await pollTvCode(code.code, code.secret);
+        if (st === "approved") onPaired();
+        if (st === "expired") setRound((r) => r + 1);
+      } catch {
+        /* keep polling */
       }
-      setLeft((l) => {
-        if (l <= 1 || codeExpired(code)) {
-          setCode(createTvCode());
-          return 15 * 60;
-        }
-        return l - 1;
-      });
-    }, 1000);
-    return () => clearInterval(id);
+    }, 3000);
+    return () => {
+      clearInterval(tick);
+      clearInterval(poll);
+    };
   }, [code, onPaired]);
 
   const base = typeof window !== "undefined" ? `${location.origin}${location.pathname.replace(/\/tv\/?$/, "")}` : "";
-  const pretty = `${code.slice(0, 4)} ${code.slice(4)}`;
+  const pretty = code ? `${code.code.slice(0, 4)} ${code.code.slice(4)}` : "···· ····";
   return (
     <div className="grid h-full grid-cols-2 items-center gap-[4vw] px-[8vw]">
       <div>
@@ -115,21 +154,18 @@ function Pairing({ onPaired }: { onPaired: (s: TvSession) => void }) {
           <li><b className="text-white">2.</b> Or on a computer, visit <b className="text-white">{base.replace(/^https?:\/\//, "")}/account/tv</b>.</li>
           <li><b className="text-white">3.</b> Enter the code on the right.</li>
         </ol>
-        <a
-          data-nav
-          data-nav-default
-          href={`${base}/account/tv/?code=${code}`}
-          target="_blank"
-          rel="noreferrer"
-          className="mt-[2em] inline-block rounded-md bg-white/10 px-[1.4em] py-[0.7em] text-[1em] font-semibold outline-none ring-white focus:bg-white focus:text-black"
-        >
-          Demo: approve from this browser
-        </a>
+        <button data-nav data-nav-default onClick={() => setRound((r) => r + 1)} className="mt-[2em] inline-block rounded-md bg-white/10 px-[1.4em] py-[0.7em] text-[1em] font-semibold outline-none ring-white focus:bg-white focus:text-black">
+          Get a new code
+        </button>
       </div>
       <div className="rounded-2xl bg-white/5 p-[3em] text-center">
         <p className="text-[1.2em] uppercase tracking-[0.3em] text-white/60">Your code</p>
         <p aria-live="polite" className="mt-[0.4em] whitespace-nowrap font-mono text-[4em] font-bold tracking-[0.1em]">{pretty}</p>
-        <p className="mt-[1em] text-white/60">Code refreshes in {Math.floor(left / 60)}:{String(left % 60).padStart(2, "0")}</p>
+        {err ? (
+          <p className="mt-[1em] text-danger">{err}</p>
+        ) : (
+          <p className="mt-[1em] text-white/60">Code refreshes in {Math.floor(left / 60)}:{String(left % 60).padStart(2, "0")}</p>
+        )}
         <p className="mt-[2em] flex items-center justify-center gap-2 text-white/60">
           <span className="inline-block h-[0.7em] w-[0.7em] animate-pulse rounded-full bg-brand-bright" /> Waiting for your phone…
         </p>
@@ -151,7 +187,7 @@ function Profiles({ account, onPick, onSignOut }: { account: Account; onPick: (p
               <span className="block rounded-lg ring-white transition group-focus:scale-110 group-focus:ring-[0.25em]">
                 <Avatar index={p.avatar} kids={p.kids} className="h-[9em] w-[9em] rounded-lg" />
               </span>
-              <span className="text-[1.4em] text-white/60 group-focus:text-white">{p.name}{settingsOf(p).pin ? " 🔒" : ""}</span>
+              <span className="text-[1.4em] text-white/60 group-focus:text-white">{p.name}{p.hasPin ? " (PIN)" : ""}</span>
             </button>
           </li>
         ))}
@@ -172,11 +208,13 @@ function PinPad({ profile, onOk, onBack }: { profile: Profile; onOk: () => void;
     setBad(false);
     setPin(next);
     if (next.length === 4) {
-      if (next === settingsOf(profile).pin) onOk();
-      else {
-        setBad(true);
-        setPin("");
-      }
+      void checkProfilePin(profile.id, next).then((good) => {
+        if (good) onOk();
+        else {
+          setBad(true);
+          setPin("");
+        }
+      });
     }
   };
   return (
@@ -221,7 +259,7 @@ function Main({ account, profile, screen, setScreen, onSwitch, onSignOut }: { ac
   const max = s.maturity;
   const library = useLibrary(profile.id);
   const [section, setSection] = useState<Section>("home");
-  const [focused, setFocused] = useState<Title>(() => featuredFor("home", kids, max));
+  const [focused, setFocused] = useState<Title | null>(() => featuredFor("home", kids, max));
   const [query, setQuery] = useState("");
   const [railOpen, setRailOpen] = useState(false);
 
@@ -292,6 +330,8 @@ function Main({ account, profile, screen, setScreen, onSwitch, onSignOut }: { ac
           <SearchScreen tx={tx} query={query} setQuery={setQuery} results={query ? results : suggestions} onOpen={(t) => setScreen({ name: "details", title: t })} />
         ) : (
           <>
+            {focused && (
+              <>
             {/* Hero follows the focused card, like TV apps do */}
             <section className="pointer-events-none fixed inset-0 -z-0">
               <Image src={img(focused.backdrop ?? focused.image, 1600, 900)} alt="" fill sizes="100vw" className="object-cover opacity-60" priority />
@@ -306,6 +346,8 @@ function Main({ account, profile, screen, setScreen, onSwitch, onSignOut }: { ac
               </p>
               <p className="mt-[0.5em] line-clamp-2 max-w-[42em] text-[1.05em] text-white/80">{focused.synopsis}</p>
             </div>
+              </>
+            )}
             <div className="relative z-10 space-y-[1.6em] pb-[3em]">
               {rows.length === 0 && <p className="text-[1.3em] text-white/60">{section === "mylist" ? "Add titles to My List to see them here." : "Nothing here yet."}</p>}
               {rows.map((row, ri) => (
@@ -455,15 +497,22 @@ function Details({ t, tx, kids, max, inList, onList, onPlay, onOpen, profileId }
 /* ---------------- Player ---------------- */
 function TvPlayer({ account, profile, screen, setScreen }: { account: Account; profile: Profile; screen: Extract<Screen, { name: "player" }>; setScreen: (s: Screen) => void }) {
   const [media, setMedia] = useState<ResolvedMedia | null>(null);
+  const [error, setError] = useState("");
+  const [streamId] = useState(() => `tv-${crypto.randomUUID()}`);
   const { title, season, episode } = screen;
 
   useEffect(() => {
     let cancelled = false;
-    resolveMedia(title, season, episode).then((m) => !cancelled && setMedia(m));
+    resolveMedia(title, season, episode, { streamId, profileId: profile.id, device: deviceName() }).then((r) => {
+      if (cancelled) return;
+      if (r.ok) return setMedia(r.media);
+      const c = r.claim;
+      setError(c && !c.ok && c.reason === "screens" ? `Too many people are using your account. Your plan allows ${c.limit} screen${(c.limit ?? 1) > 1 ? "s" : ""} at a time.` : r.error ?? "We couldn't start this title.");
+    });
     return () => {
       cancelled = true;
     };
-  }, [title, season, episode]);
+  }, [title, season, episode, streamId, profile.id]);
 
   // Remote Back key leaves the player
   useEffect(() => {
@@ -477,6 +526,14 @@ function TvPlayer({ account, profile, screen, setScreen }: { account: Account; p
     return () => window.removeEventListener("keydown", onKey);
   }, [screen.back, setScreen]);
 
+  if (error) {
+    return (
+      <div className="fixed inset-0 flex flex-col items-center justify-center gap-[1em] bg-black px-[8vw] text-center">
+        <p className="text-[1.6em] font-bold">{error}</p>
+        <button data-nav data-nav-default autoFocus onClick={() => setScreen(screen.back)} className="rounded bg-white px-[1.4em] py-[0.5em] font-semibold text-black">Back</button>
+      </div>
+    );
+  }
   if (!media) return <div className="fixed inset-0 bg-black" />;
   return (
     <Player
@@ -490,6 +547,7 @@ function TvPlayer({ account, profile, screen, setScreen }: { account: Account; p
       profileId={profile.id}
       planId={account.planId ?? "standard"}
       prefs={settingsOf(profile)}
+      streamId={streamId}
       email={account.email}
       profileName={profile.name}
       onExit={() => setScreen(screen.back)}

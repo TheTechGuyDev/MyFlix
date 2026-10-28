@@ -4,7 +4,7 @@ import Image from "next/image";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { getAccount, getActiveProfileId, setActiveProfile, settingsOf, signOut, type Account, type Profile } from "@/lib/mock-auth";
+import { getAccount, getActiveProfileId, setActiveProfile, settingsOf, signOut, type Account, type Profile } from "@/lib/account";
 import { allowedFor, byId, catalog, comingSoon, featuredFor, img, rowsFor, search, type RowDef, type Tab, type Title } from "@/lib/catalog";
 import { useLibrary, type LibraryApi } from "@/lib/library";
 import type { Maturity } from "@/lib/catalog";
@@ -15,13 +15,11 @@ import TitleCard from "./TitleCard";
 import DetailsModal from "./DetailsModal";
 import { BellIcon, InfoIcon } from "./icons";
 import { siteSettings } from "@/lib/site-settings";
-import { campaignNotices, remindersOf, takeDueReminders, toggleReminder } from "@/lib/extras";
-import { deliverCampaignPush, pushNotify } from "@/lib/messaging";
+import { remindersOf, takeDueReminders, toggleReminder } from "@/lib/extras";
+import { deliverNewNotices, showSystemNotification } from "@/lib/messaging";
 import { useT } from "@/lib/i18n";
 
 const TABS: Tab[] = ["home", "series", "movies", "new", "mylist"];
-const SEED = ["no-witness", "chairmans-son", "danfo-diaries"];
-const KIDS_SEED = ["compound-kids", "market-day"];
 
 export default function BrowseApp() {
   const router = useRouter();
@@ -41,19 +39,20 @@ export default function BrowseApp() {
     const acc = getAccount();
     if (!acc) return router.replace("/login");
     if (acc.suspended) {
-      signOut();
+      void signOut();
       return router.replace("/login?suspended=1");
     }
+    if (!acc.hasAccess) return router.replace("/account/payment");
     const p = acc.profiles.find((x) => x.id === getActiveProfileId());
     if (!p) return router.replace("/profiles");
     setAccount(acc);
     setProfile(p);
     // Push notifications: admin campaigns and launched "Remind Me" titles
-    if (acc.notifications?.push !== false) {
-      deliverCampaignPush(acc.email, campaignNotices());
-      const due = takeDueReminders(p.id, (id) => Boolean(byId(id)) && !byId(id)!.comingSoon);
-      due.forEach((id) => pushNotify(acc.email, "Now on MyFlix", `${byId(id)!.title} is here. Start watching now.`, `/browse?title=${id}`, "reminder"));
-    }
+    const pushOn = acc.notifications?.push !== false;
+    void deliverNewNotices(acc.id, pushOn);
+    void takeDueReminders(p.id, (id) => Boolean(byId(id)) && !byId(id)!.comingSoon).then((due) => {
+      if (pushOn) due.forEach((id) => showSystemNotification("Now on MyFlix", `${byId(id)!.title} is here. Start watching now.`, `/browse?title=${id}`));
+    });
   }, [router]);
 
   // Deep link from notifications: /browse?title=ID opens the details
@@ -62,7 +61,7 @@ export default function BrowseApp() {
     if (linked && byId(linked)) setOpen(byId(linked)!);
   }, [linked]);
 
-  const library = useLibrary(profile?.id ?? null, kids ? KIDS_SEED : SEED);
+  const library = useLibrary(profile?.id ?? null);
 
   useEffect(() => {
     if (!notice) return;
@@ -79,6 +78,7 @@ export default function BrowseApp() {
   const play = useCallback(
     (t: Title, season?: number, episode?: number) => {
       if (t.comingSoon) return setNotice(`"${t.title}" arrives ${t.comingSoon}. Tap Remind Me to get notified.`);
+      if (!t.hasVideo) return setNotice(`"${t.title}" is being prepared. Check back shortly.`);
       const ep = season && episode ? `&s=${season}&e=${episode}` : "";
       router.push(`/watch?id=${t.id}${ep}`);
     },
@@ -138,8 +138,8 @@ export default function BrowseApp() {
         profile={profile}
         profiles={account.profiles}
         onSwitch={switchProfile}
-        onSignOut={() => {
-          signOut();
+        onSignOut={async () => {
+          await signOut();
           router.push("/");
         }}
         onOpenTitle={(id) => setOpen(byId(id) ?? null)}
@@ -159,7 +159,14 @@ export default function BrowseApp() {
         <NewAndPopular library={library} rows={rows} max={max} onOpen={openTitle} onPlay={play} profileId={profile.id} />
       ) : (
         <>
-          <Hero title={featuredFor(tab, kids, max)} onPlay={play} onInfo={openTitle} />
+          {featuredFor(tab, kids, max) ? (
+            <Hero title={featuredFor(tab, kids, max)!} onPlay={play} onInfo={openTitle} />
+          ) : (
+            <div className="flex min-h-[60vh] flex-col items-center justify-center px-6 pt-24 text-center">
+              <p className="text-2xl font-bold">New titles are on the way</p>
+              <p className="mt-2 max-w-md text-white/60">We&apos;re adding films and series right now. Check back soon, or turn on notifications to hear when they land.</p>
+            </div>
+          )}
           <div className="relative z-10 -mt-12 space-y-6 pb-10 sm:-mt-20 sm:space-y-10 lg:-mt-32">
             {rows.map((r) => (
               <Row key={r.id} row={r} library={library} onOpen={openTitle} onPlay={play} />
@@ -236,7 +243,10 @@ function MyList({ library, onBrowse, ...rest }: { library: LibraryApi; onOpen: (
 }
 
 function NewAndPopular({ library, rows, max, onOpen, onPlay, profileId }: { library: LibraryApi; rows: RowDef[]; max: Maturity; onOpen: (t: Title) => void; onPlay: (t: Title) => void; profileId: string }) {
-  const [reminders, setReminders] = useState<string[]>(() => remindersOf(profileId));
+  const [reminders, setReminders] = useState<string[]>([]);
+  useEffect(() => {
+    remindersOf(profileId).then(setReminders);
+  }, [profileId]);
   const tx = useT();
   const fresh: RowDef = { id: "fresh", title: "New on MyFlix", items: catalog.filter((t) => t.isNew && !t.comingSoon && allowedFor(t, max)) };
   const top = rows.find((r) => r.id === "top10");
@@ -264,7 +274,10 @@ function NewAndPopular({ library, rows, max, onOpen, onPlay, profileId }: { libr
                     <span className="font-display absolute bottom-3 left-4 text-4xl drop-shadow-lg">{t.title}</span>
                   </div>
                   <div className="mt-3 flex items-center gap-6">
-                    <button onClick={() => setReminders(toggleReminder(profileId, t.id))} className={`flex flex-col items-center text-xs ${on ? "text-brand-bright" : "text-white/80 hover:text-white"}`}>
+                    <button onClick={async () => {
+                        await toggleReminder(profileId, t.id, on);
+                        setReminders(on ? reminders.filter((x) => x !== t.id) : [...reminders, t.id]);
+                      }} className={`flex flex-col items-center text-xs ${on ? "text-brand-bright" : "text-white/80 hover:text-white"}`}>
                       <BellIcon className="h-6 w-6" /> {tx(on ? "Reminder set" : "Remind Me")}
                     </button>
                     <button onClick={() => onOpen(t)} className="flex flex-col items-center text-xs text-white/80 hover:text-white">
@@ -286,12 +299,12 @@ function NewAndPopular({ library, rows, max, onOpen, onPlay, profileId }: { libr
 }
 
 function BrowseFooter() {
-  const links = ["Audio Description", "Help Centre", "Gift Cards", "Media Centre", "Investor Relations", "Jobs", "Terms of Use", "Privacy", "Legal Notices", "Cookie Preferences", "Corporate Information", "Contact Us"];
+  const links: [string, string][] = [["Help Centre", "/help"], ["Account", "/account"], ["Gift Cards", "/account/gift"], ["Watch on TV", "/tv"], ["Terms of Use", "/terms"], ["Privacy", "/privacy"], ["Cookie Policy", "/cookies"], ["Contact Us", "/help"]];
   return (
     <footer className="mx-auto max-w-5xl px-4 pb-14 pt-8 text-sm text-white/50 sm:px-10">
       <ul className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-        {links.map((l) => (
-          <li key={l}><Link href={l === "Help Centre" ? "/help" : l === "Gift Cards" ? "/account/gift" : "/help"} className="hover:underline">{l}</Link></li>
+        {links.map(([l, href]) => (
+          <li key={l}><Link href={href} className="hover:underline">{l}</Link></li>
         ))}
       </ul>
       <p className="mt-6 inline-block border border-white/40 px-2 py-1 text-xs">Service Code</p>

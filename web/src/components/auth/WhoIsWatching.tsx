@@ -3,7 +3,7 @@
 import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import Logo from "@/components/landing/Logo";
-import { getAccount, MAX_PROFILES, newId, nextStep, saveProfiles, setActiveProfile, type Profile } from "@/lib/mock-auth";
+import { checkProfilePin, getAccount, MAX_PROFILES, newId, nextStep, saveProfiles, setActiveProfile, type Profile } from "@/lib/account";
 import Avatar, { avatarColors } from "./Avatar";
 import { useT } from "@/lib/i18n";
 
@@ -27,12 +27,14 @@ export default function WhoIsWatching() {
 
   const persist = async (next: Profile[]) => {
     setProfiles(next);
-    await saveProfiles(next);
+    const r = await saveProfiles(next);
+    // New profiles get their real ids from the server
+    if (r.ok) setProfiles(getAccount()?.profiles ?? next);
   };
 
   const pick = (p: Profile) => {
     if (manage) return setEditing(p);
-    if (p.settings?.pin) return setLocked(p);
+    if (p.hasPin) return setLocked(p);
     setActiveProfile(p.id);
     router.push("/browse");
   };
@@ -134,12 +136,12 @@ function PinPrompt({ profile, onOk, onCancel }: { profile: Profile; onOk: () => 
     setError(false);
     if (d && i < 3) refs[i + 1].current?.focus();
     if (next.every(Boolean)) {
-      if (next.join("") === profile.settings?.pin) onOk();
-      else {
+      void checkProfilePin(profile.id, next.join("")).then((good) => {
+        if (good) return onOk();
         setError(true);
         setDigits(["", "", "", ""]);
         refs[0].current?.focus();
-      }
+      });
     }
   };
 

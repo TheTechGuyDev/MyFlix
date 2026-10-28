@@ -3,9 +3,23 @@
 import Image from "next/image";
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { trending, unsplash, type TrendingTitle } from "@/lib/landing-data";
+import { catalog, img } from "@/lib/catalog";
+import type { TrendingTitle } from "@/lib/landing-data";
+import { useStore } from "@/lib/store";
+
+/** Real published titles from MyFlix (the section hides until there are some). */
+function useTrending(): TrendingTitle[] {
+  const ready = useStore((s) => s.publicReady);
+  if (!ready) return [];
+  return catalog
+    .filter((t) => !t.comingSoon && !t.kids)
+    .sort((a, b) => b.year - a.year || b.match - a.match)
+    .slice(0, 10)
+    .map((t) => ({ id: t.id, title: t.title, image: t.image, year: t.year, rating: t.maturity, type: t.type === "series" ? (t.genres.includes("Documentary") ? "Docuseries" : "Series") : "Movie", genres: t.genres, synopsis: t.synopsis }));
+}
 
 export default function Trending() {
+  const trending = useTrending();
   const rowRef = useRef<HTMLDivElement>(null);
   const [canLeft, setCanLeft] = useState(false);
   const [canRight, setCanRight] = useState(true);
@@ -30,6 +44,7 @@ export default function Trending() {
     el.scrollBy({ left: dir * el.clientWidth * 0.85, behavior: "smooth" });
   };
 
+  if (!trending.length) return null;
   return (
     <section className="mx-auto max-w-7xl px-4 py-8 sm:px-8 lg:px-12">
       <h2 className="mb-4 text-xl font-bold sm:text-2xl">Trending Now</h2>
@@ -62,7 +77,7 @@ export default function Trending() {
                 {i + 1}
               </span>
               <span className="relative block h-[150px] w-[104px] overflow-hidden rounded-lg transition duration-300 hover:scale-105 sm:h-[230px] sm:w-[160px]">
-                <Image src={unsplash(t.image, 400)} alt="" fill sizes="160px" className="object-cover" />
+                <Image src={img(t.image, 400)} alt="" fill sizes="160px" className="object-cover" />
                 <span className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black via-black/70 to-transparent px-2 pb-2 pt-10">
                   <span className="block text-[10px] font-bold uppercase tracking-widest text-brand-bright">
                     MyFlix {t.type}
@@ -114,7 +129,7 @@ function TitleModal({ title, onClose }: { title: TrendingTitle; onClose: () => v
         onClick={(e) => e.stopPropagation()}
       >
         <div className="relative aspect-video w-full">
-          <Image src={unsplash(title.image, 1200)} alt="" fill sizes="700px" className="object-cover" />
+          <Image src={img(title.image, 1200)} alt="" fill sizes="700px" className="object-cover" />
           <div className="absolute inset-0 bg-gradient-to-t from-ink-2 via-ink-2/30 to-transparent" />
           <h3 id="title-modal-heading" className="font-display absolute bottom-4 left-6 text-5xl leading-none sm:text-6xl">
             {title.title}

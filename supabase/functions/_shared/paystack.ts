@@ -79,6 +79,31 @@ export async function applyPayment(tx: Tx) {
   const { data: acc } = await admin.from("accounts").select("*").eq("id", pay.account_id).single();
   if (!acc) return { ok: true, orphan: true };
 
+  // Card check: save the new card and refund the ₦50
+  if (pay.kind === "card_update") {
+    const a = tx.authorization;
+    if (a?.authorization_code) {
+      await admin.from("payment_methods").upsert({
+        account_id: acc.id,
+        authorization_code: a.authorization_code,
+        last4: a.last4,
+        card_type: a.card_type,
+        exp: a.exp_month && a.exp_year ? `${a.exp_month}/${String(a.exp_year).slice(-2)}` : null,
+        bank: a.bank,
+        channel: a.channel,
+        reusable: Boolean(a.reusable),
+        updated_at: new Date().toISOString(),
+      });
+    }
+    try {
+      await paystack("/refund", { transaction: pay.reference });
+      await admin.from("payments").update({ status: "refunded", refunded_at: new Date().toISOString() }).eq("id", pay.id);
+    } catch (e) {
+      console.error("card check refund failed", e);
+    }
+    return { ok: true, card: true };
+  }
+
   const freeMonths = Number(pay.free_months ?? 0);
   const start = acc.paid_until && new Date(acc.paid_until) > new Date() ? new Date(acc.paid_until) : new Date();
   const paidUntil = addMonths(start, pay.months + freeMonths);
