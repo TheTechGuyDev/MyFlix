@@ -5,7 +5,7 @@ import { useEffect, type ReactNode } from "react";
 import { boot, useStore } from "@/lib/store";
 
 /** Public pages that render straight away (SEO); everything else waits for the account to load. */
-const PUBLIC = [/^\/$/, /^\/(terms|privacy|cookies|legal)\/?$/];
+const PUBLIC = [/^\/$/, /^\/(terms|privacy|cookies|legal|paid)\/?$/];
 
 export default function AppGate({ children }: { children: ReactNode }) {
   const path = (usePathname() || "/").replace(process.env.NEXT_PUBLIC_BASE_PATH ?? "", "") || "/";

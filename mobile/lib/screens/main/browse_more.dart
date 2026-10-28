@@ -4,10 +4,12 @@ import 'package:provider/provider.dart';
 import '../../data/auth_store.dart';
 import '../../data/catalog.dart';
 import '../../data/library_store.dart';
+import '../../data/messages.dart';
 import '../../data/models.dart';
 import '../../theme.dart';
 import '../../widgets/common.dart';
 import '../../widgets/titles.dart';
+import 'details.dart' show startDownload;
 import '../../i18n.dart';
 
 /* ======================= Search ======================= */
@@ -26,7 +28,8 @@ class _SearchScreenState extends State<SearchScreen> {
     final lib = context.watch<LibraryStore>();
     final q = _q.text;
     final results = Catalog.search(q, kids: p.kids, max: p.settings.maturity);
-    final top = Catalog.rows(filter: 'all', kids: p.kids, max: p.settings.maturity).first.items;
+    final rowsAll = Catalog.rows(filter: 'all', kids: p.kids, max: p.settings.maturity);
+    final top = rowsAll.isEmpty ? <MediaTitle>[] : rowsAll.first.items;
 
     return Scaffold(
       appBar: AppBar(
@@ -371,7 +374,7 @@ class DownloadsScreen extends StatelessWidget {
                                       color: d.state == DlState.done ? AppColors.brandBright : d.state == DlState.downloading ? Colors.white : AppColors.danger),
                                   onSelected: (v) {
                                     if (v == 'play') playTitle(context, t, season: d.season, episode: d.episode);
-                                    if (v == 'retry') lib.startDownload(t.id, season: d.season, episode: d.episode);
+                                    if (v == 'retry') startDownload(context, t, season: d.season, episode: d.episode);
                                     if (v == 'delete') lib.deleteDownload(d.key);
                                   },
                                   itemBuilder: (_) => [
@@ -404,53 +407,82 @@ class DownloadsScreen extends StatelessWidget {
 }
 
 /* ======================= Notifications ======================= */
-class NotificationsScreen extends StatelessWidget {
+/// Messages from MyFlix (new releases, campaigns) plus reminders for titles this profile follows.
+class NotificationsScreen extends StatefulWidget {
   const NotificationsScreen({super.key});
+  @override
+  State<NotificationsScreen> createState() => _NotificationsScreenState();
+}
+
+class _NotificationsScreenState extends State<NotificationsScreen> {
+  List<AppNotice>? _notices;
+
+  @override
+  void initState() {
+    super.initState();
+    Notices.fetch().then((n) => mounted ? setState(() => _notices = n) : null);
+  }
+
+  String _ago(String iso) {
+    final d = DateTime.tryParse(iso);
+    if (d == null) return '';
+    final s = DateTime.now().difference(d);
+    if (s.inMinutes < 1) return 'Just now';
+    if (s.inHours < 1) return '${s.inMinutes}m ago';
+    if (s.inDays < 1) return '${s.inHours}h ago';
+    if (s.inDays < 7) return '${s.inDays}d ago';
+    return '${d.day}/${d.month}/${d.year}';
+  }
+
   @override
   Widget build(BuildContext context) {
     final p = context.watch<AuthStore>().activeProfile!;
     final lib = context.watch<LibraryStore>();
     final vis = Catalog.visible(kids: p.kids, max: p.settings.maturity, includeComing: true);
-    final items = <(MediaTitle, String, String, String)>[];
-    for (final t in vis.where((t) => t.comingSoon != null && lib.reminders.contains(t.id))) {
-      items.add((t, 'Reminder', '${t.title} arrives ${t.comingSoon}', 'Reminder'));
+    final items = <(MediaTitle?, String, String, String, String?)>[];
+    for (final t in vis.where((t) => lib.reminders.contains(t.id))) {
+      items.add((t, t.comingSoon != null ? 'Reminder' : 'Now streaming', t.comingSoon != null ? '${t.title} arrives ${t.comingSoon}' : '${t.title} is here. Watch now.', '', null));
     }
-    for (final t in vis.where((t) => t.isNew && t.comingSoon == null).take(4)) {
-      items.add((t, t.isSeries ? 'New Episodes' : 'New Arrival', t.title, t.isSeries ? 'Today' : '2 days ago'));
-    }
-    for (final t in vis.where((t) => t.comingSoon != null && !lib.reminders.contains(t.id)).take(2)) {
-      items.add((t, 'Coming Soon', '${t.title}: ${t.comingSoon}', 'This week'));
+    for (final n in _notices ?? const <AppNotice>[]) {
+      final t = n.titleId == null ? null : Catalog.byId(n.titleId!);
+      if (t != null && !vis.contains(t)) continue;
+      items.add((t, n.head, n.body, _ago(n.at), n.link));
     }
     return Scaffold(
       appBar: AppBar(title: const Text('Notifications', style: TextStyle(fontWeight: FontWeight.w800))),
-      body: items.isEmpty
-          ? const _Empty(icon: Icons.notifications_none, title: 'No notifications', body: 'New arrivals and reminders will appear here.')
-          : ListView.separated(
-              itemCount: items.length,
-              separatorBuilder: (_, _) => const Divider(color: AppColors.line, height: 1),
-              itemBuilder: (_, i) {
-                final n = items[i];
-                return InkWell(
-                  onTap: () => openTitle(context, n.$1),
-                  child: Padding(
-                    padding: const EdgeInsets.all(14),
-                    child: Row(children: [
-                      Container(width: 8, height: 8, margin: const EdgeInsets.only(right: 10), decoration: BoxDecoration(shape: BoxShape.circle, color: i < 2 ? AppColors.brandBright : Colors.transparent)),
-                      SizedBox(width: 120, child: AspectRatio(aspectRatio: 16 / 9, child: ClipRRect(borderRadius: BorderRadius.circular(4), child: NetImage(img(n.$1.image, w: 300, h: 170))))),
-                      const SizedBox(width: 12),
-                      Expanded(
-                        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                          Text(n.$2, style: const TextStyle(fontWeight: FontWeight.w700)),
-                          Text(n.$3, style: const TextStyle(color: Colors.white70)),
-                          const SizedBox(height: 4),
-                          Text(n.$4, style: const TextStyle(color: AppColors.muted, fontSize: 12)),
+      body: _notices == null
+          ? const Center(child: CircularProgressIndicator())
+          : items.isEmpty
+              ? const _Empty(icon: Icons.notifications_none, title: 'No notifications', body: 'New arrivals and reminders will appear here.')
+              : ListView.separated(
+                  itemCount: items.length,
+                  separatorBuilder: (_, _) => const Divider(color: AppColors.line, height: 1),
+                  itemBuilder: (_, i) {
+                    final n = items[i];
+                    return InkWell(
+                      onTap: n.$1 == null ? null : () => openTitle(context, n.$1!),
+                      child: Padding(
+                        padding: const EdgeInsets.all(14),
+                        child: Row(children: [
+                          if (n.$1 != null) ...[
+                            SizedBox(width: 120, child: AspectRatio(aspectRatio: 16 / 9, child: ClipRRect(borderRadius: BorderRadius.circular(4), child: NetImage(img(n.$1!.backdrop ?? n.$1!.image, w: 300, h: 170))))),
+                            const SizedBox(width: 12),
+                          ] else ...[
+                            const Icon(Icons.campaign_outlined, color: AppColors.brandBright, size: 32),
+                            const SizedBox(width: 12),
+                          ],
+                          Expanded(
+                            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                              Text(n.$2, style: const TextStyle(fontWeight: FontWeight.w700)),
+                              Text(n.$3, style: const TextStyle(color: Colors.white70)),
+                              if (n.$4.isNotEmpty) ...[const SizedBox(height: 4), Text(n.$4, style: const TextStyle(color: AppColors.muted, fontSize: 12))],
+                            ]),
+                          ),
                         ]),
                       ),
-                    ]),
-                  ),
-                );
-              },
-            ),
+                    );
+                  },
+                ),
     );
   }
 }

@@ -3,7 +3,7 @@ name: Build Android APK
 on:
   push:
     branches: [main]
-    paths: ["mobile/**", ".github/workflows/mobile-apk.yml"]
+    paths: ["mobile/**", "scripts/**", ".github/workflows/mobile-apk.yml"]
   workflow_dispatch:
 
 permissions:
@@ -21,6 +21,13 @@ jobs:
         working-directory: mobile
     steps:
       - uses: actions/checkout@v4
+      # Public Supabase URL + publishable key baked into the app (safe to ship)
+      - name: Supabase settings
+        working-directory: .
+        run: bash scripts/supabase-public-env.sh
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          SUPABASE_PROJECT_REF: ${{ secrets.SUPABASE_PROJECT_REF }}
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -31,7 +38,9 @@ jobs:
           flutter-version: 3.47.8
           cache: true
       - run: flutter pub get
-      - run: flutter build apk --release
+      - run: flutter analyze --no-fatal-infos
+      - run: flutter test
+      - run: flutter build apk --release --dart-define=SUPABASE_URL=$SUPABASE_URL --dart-define=SUPABASE_KEY=$SUPABASE_PUBLIC_KEY
       - run: cp build/app/outputs/flutter-apk/app-release.apk build/MyFlix.apk
       - uses: softprops/action-gh-release@v2
         with:

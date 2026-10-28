@@ -4,10 +4,12 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:go_router/go_router.dart';
+import 'package:http/http.dart' as http;
 import 'package:provider/provider.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:video_player/video_player.dart';
 import '../../data/auth_store.dart';
+import '../../data/backend.dart';
 import '../../data/catalog.dart';
 import '../../data/library_store.dart';
 import '../../data/models.dart';
@@ -18,6 +20,7 @@ import '../../data/protect.dart';
 import '../../i18n.dart';
 import '../../theme.dart';
 import '../../widgets/cast.dart';
+import '../../widgets/common.dart' show toast;
 
 class PlayerScreen extends StatefulWidget {
   final String id;
@@ -27,7 +30,6 @@ class PlayerScreen extends StatefulWidget {
   State<PlayerScreen> createState() => _PlayerScreenState();
 }
 
-const _intro = (start: 5.0, end: 35.0);
 const _speeds = [0.5, 0.75, 1.0, 1.25, 1.5];
 
 class _PlayerScreenState extends State<PlayerScreen> {
@@ -48,6 +50,9 @@ class _PlayerScreenState extends State<PlayerScreen> {
   final String _streamId = AuthStore.newId();
   List<Map<String, dynamic>> _others = [];
   int _beat = 0;
+  ({double start, double end})? _intro;
+  String? _source, _poster;
+  Subtitle? _sub;
   File? _plainTemp;
   int _wm = 0;
   static int _autoplayChain = 0;
@@ -58,7 +63,8 @@ class _PlayerScreenState extends State<PlayerScreen> {
     final p = lib.progress[t.id];
     _season = widget.season ?? (t.isSeries ? p?.season ?? 1 : 1);
     _episode = widget.episode ?? (t.isSeries ? p?.episode ?? 1 : 1);
-    _subs = profile.settings.language != 'English';
+    _sub = _pickSub();
+    _subs = _sub != null && profile.settings.language != 'English';
     if (!kIsWeb) {
       SystemChrome.setPreferredOrientations([DeviceOrientation.landscapeLeft, DeviceOrientation.landscapeRight]);
       SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
@@ -68,7 +74,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
     _saveTimer = Timer.periodic(const Duration(seconds: 5), (_) {
       _save();
       _wm = (_wm + 1) % 16;
-      if (_c?.value.isPlaying == true && ++_beat % 2 == 0) _claim();
+      if (_c?.value.isPlaying == true && ++_beat % 2 == 0 && !_offline) _claim();
     });
   }
 
@@ -76,24 +82,25 @@ class _PlayerScreenState extends State<PlayerScreen> {
     if (!t.isSeries) return null;
     final count = Catalog.episodes(t, _season).length;
     if (_episode < count) return (season: _season, episode: _episode + 1);
-    if (_season < (t.seasons ?? 1)) return (season: _season + 1, episode: 1);
+    final later = t.seasonNumbers.where((n) => n > _season);
+    if (later.isNotEmpty && Catalog.episodes(t, later.first).isNotEmpty) return (season: later.first, episode: Catalog.episodes(t, later.first).first.number);
     return null;
   }
 
-  String get _epTitle => t.isSeries ? Catalog.episodes(t, _season).firstWhere((e) => e.number == _episode).title : '';
+  String get _epTitle => t.isSeries ? (Catalog.episodes(t, _season).where((e) => e.number == _episode).firstOrNull?.title ?? '') : '';
 
-  Future<ClosedCaptionFile> _captions() async {
-    final lines = [
-      if (t.isSeries) 'Previously on ${t.title}...' else t.title,
-      ...t.synopsis.split(RegExp(r'(?<=[.!?,])\s+')),
-      'Subtitles: ${profile.settings.language}',
-    ];
-    final b = StringBuffer('WEBVTT\n\n');
-    String ts(int s) => '00:${(s ~/ 60).toString().padLeft(2, '0')}:${(s % 60).toString().padLeft(2, '0')}.000';
-    for (var i = 0; i < lines.length; i++) {
-      b.write('${ts(2 + i * 5)} --> ${ts(6 + i * 5)}\n${lines[i]}\n\n');
-    }
-    return WebVTTCaptionFile(b.toString());
+  /// Subtitle file uploaded in the admin dashboard, in the profile's language when there is one.
+  Subtitle? _pickSub() {
+    if (t.subtitles.isEmpty) return null;
+    const codes = {'English': 'en', 'Yorùbá': 'yo', 'Yoruba': 'yo', 'Hausa': 'ha', 'Igbo': 'ig', 'Pidgin': 'pcm'};
+    final want = codes[profile.settings.language] ?? 'en';
+    return t.subtitles.where((x) => x.lang == want).firstOrNull ?? t.subtitles.where((x) => x.lang == 'en').firstOrNull ?? t.subtitles.first;
+  }
+
+  Future<ClosedCaptionFile>? _captions() {
+    final sub = _sub;
+    if (sub == null) return null;
+    return http.get(Uri.parse(sub.url)).then((r) => WebVTTCaptionFile(r.statusCode == 200 ? r.body : 'WEBVTT\n'));
   }
 
   Future<void> _load() async {
@@ -119,9 +126,32 @@ class _PlayerScreenState extends State<PlayerScreen> {
         candidates.add(() => VideoPlayerController.file(f, closedCaptionFile: _captions()));
       } catch (_) {}
     }
-    for (final s in Catalog.sourcesFor(t)) {
-      candidates.add(() => VideoPlayerController.networkUrl(Uri.parse(s), formatHint: s.endsWith('.m3u8') ? VideoFormat.hls : null, closedCaptionFile: _captions()));
+    final offlineCount = candidates.length;
+    // Signed stream from the server: checks membership and the plan's screen limit first
+    if (offlineCount == 0 || await _online()) {
+      try {
+        final r = await fn('playback', {'title_id': t.id, 'season': _season, 'episode': _episode, 'stream_id': _streamId, 'profile_id': profile.id, 'device': LiveStreams.device});
+        if (r['ok'] == false && offlineCount == 0) {
+          await _block('${r['reason'] ?? 'stopped'}');
+          return;
+        }
+        if (r['ok'] != false) {
+          final intro = r['intro'];
+          if (intro is Map) _intro = (start: (intro['start'] as num).toDouble(), end: (intro['end'] as num).toDouble());
+          _poster = r['poster'] as String?;
+          _source = (r['sources'] as List?)?.firstOrNull as String?;
+          for (final s in List<String>.from(r['sources'] ?? const [])) {
+            candidates.add(() => VideoPlayerController.networkUrl(Uri.parse(s), formatHint: s.contains('.m3u8') ? VideoFormat.hls : null, closedCaptionFile: _captions()));
+          }
+        }
+      } catch (e) {
+        if (offlineCount == 0) {
+          if (mounted) setState(() => _error = friendly(e));
+          return;
+        }
+      }
     }
+    _intro ??= _localIntro();
 
     for (var i = 0; i < candidates.length; i++) {
       final c = candidates[i]();
@@ -131,13 +161,9 @@ class _PlayerScreenState extends State<PlayerScreen> {
           await c.dispose();
           return;
         }
-        _offline = i == 0 && candidates.length > Catalog.sourcesFor(t).length;
+        _offline = i < offlineCount;
         if (resume > 0 && resume < c.value.duration.inSeconds - 30) await c.seekTo(Duration(milliseconds: (resume * 1000).round()));
         c.addListener(_tick);
-        if (!_claim()) {
-          setState(() => _c = c);
-          return;
-        }
         await c.play();
         if (!_logged) {
           _logged = true;
@@ -153,22 +179,54 @@ class _PlayerScreenState extends State<PlayerScreen> {
     if (mounted) setState(() => _error = "We're having trouble playing this title right now. Check your connection and try again.");
   }
 
-  /// Concurrent stream check + heartbeat. Returns false if this screen may not play.
-  bool _claim() {
-    final screens = Catalog.plan(account.planId)?.screens ?? 1;
-    final r = LiveStreams.claim(id: _streamId, email: account.email, profile: profile.name, titleId: t.id, title: t.title, screens: screens);
-    if (r == null) return true;
+  Future<bool> _online() async {
+    try {
+      final r = await http.head(Uri.parse(supabaseUrl)).timeout(const Duration(seconds: 4));
+      return r.statusCode < 500;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  ({double start, double end})? _localIntro() {
+    if (t.isSeries) {
+      final e = Catalog.episodes(t, _season).where((x) => x.number == _episode).firstOrNull;
+      if (e?.introStart != null && e?.introEnd != null) return (start: e!.introStart!, end: e.introEnd!);
+      return null;
+    }
+    return t.introStart != null && t.introEnd != null ? (start: t.introStart!, end: t.introEnd!) : null;
+  }
+
+  /// Shows why this screen can't play (screens, stopped, membership ended, suspended).
+  Future<void> _block(String reason) async {
     _c?.pause();
+    if (reason == 'membership' || reason == 'suspended') {
+      if (mounted) setState(() => _error = reason == 'suspended' ? 'This account has been suspended. Contact MyFlix support.' : 'Your membership has ended. Renew to keep watching.');
+      if (reason == 'membership') context.read<AuthStore>().refresh();
+      return;
+    }
+    final others = reason == 'screens' ? await LiveStreams.others(_streamId) : <Map<String, dynamic>>[];
+    if (!mounted) return;
     setState(() {
-      _blocked = r == 'stopped' ? 'stopped' : 'screens';
-      _others = LiveStreams.active(account.email, except: _streamId);
+      _blocked = reason == 'stopped' ? 'stopped' : 'screens';
+      _others = others;
     });
-    return false;
+  }
+
+  /// Heartbeat: keeps this stream counted and notices if it was stopped from elsewhere.
+  Future<void> _claim() async {
+    final r = await LiveStreams.beat(id: _streamId, profileId: profile.id, titleId: t.id);
+    if (r != null && mounted) await _block(r);
   }
 
   void _castNow(String device) {
     final c = _c;
-    CastStore.instance.cast(t.id, t.isSeries ? '${t.title} S$_season:E$_episode' : t.title, from: c?.value.position ?? Duration.zero);
+    final url = _source;
+    if (url == null || _offline) {
+      toast(context, "Downloaded videos can't be cast. Play it online to cast.");
+      return;
+    }
+    CastStore.instance.cast(t.id, t.isSeries ? '${t.title} S$_season:E$_episode' : t.title, url: url, poster: _poster, from: c?.value.position ?? Duration.zero);
     c?.pause();
     if (mounted) context.pop();
   }
@@ -314,7 +372,8 @@ class _PlayerScreenState extends State<PlayerScreen> {
     final dur = v?.duration ?? Duration.zero;
     final pos = _drag != null ? Duration(milliseconds: (_drag! * dur.inMilliseconds).round()) : (v?.position ?? Duration.zero);
     final secs = pos.inMilliseconds / 1000;
-    final inIntro = t.isSeries && secs >= _intro.start && secs < _intro.end && dur.inSeconds > _intro.end + 60;
+    final intro = _intro;
+    final inIntro = intro != null && secs >= intro.start && secs < intro.end && dur.inSeconds > intro.end + 60;
     final remaining = dur - pos;
     final next = _next;
     final showNext = next != null && dur > Duration.zero && (remaining.inSeconds <= 20 || _ended);
@@ -540,7 +599,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
                         style: FilledButton.styleFrom(backgroundColor: Colors.white, foregroundColor: AppColors.ink),
                         onPressed: () {
                           setState(() => _blocked = null);
-                          if (_claim()) _c?.play();
+                          _load();
                         },
                         child: const Text('Try Again'),
                       ),
@@ -574,7 +633,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
               right: 24,
               bottom: _ui ? 120 : 40,
               child: OutlinedButton(
-                onPressed: () => c?.seekTo(Duration(seconds: _intro.end.toInt())),
+                onPressed: () => c?.seekTo(Duration(milliseconds: (intro.end * 1000).round())),
                 style: OutlinedButton.styleFrom(backgroundColor: Colors.black54, side: const BorderSide(color: Colors.white, width: 1.5), padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 14)),
                 child: Text(context.tr('Skip Intro'), style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w700, fontSize: 15)),
               ),
@@ -669,7 +728,9 @@ class _PlayerScreenState extends State<PlayerScreen> {
               child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                 const Text('Subtitles', style: TextStyle(fontWeight: FontWeight.w700, fontSize: 16)),
                 const SizedBox(height: 4),
-                for (final o in [(false, 'Off'), (true, profile.settings.language)])
+                if (_sub == null) const Padding(padding: EdgeInsets.only(top: 6), child: Text('None for this title', style: TextStyle(color: AppColors.muted))),
+                if (_sub != null)
+                for (final o in [(false, 'Off'), (true, _sub!.label)])
                   TextButton.icon(
                     style: TextButton.styleFrom(padding: EdgeInsets.zero, foregroundColor: Colors.white, alignment: Alignment.centerLeft),
                     onPressed: () {
@@ -691,11 +752,11 @@ class _PlayerScreenState extends State<PlayerScreen> {
       builder: (ctx, set) => SizedBox(
         height: MediaQuery.of(ctx).size.height * 0.8,
         child: Column(children: [
-          if ((t.seasons ?? 1) > 1)
+          if (t.seasonNumbers.length > 1)
             SizedBox(
               height: 52,
               child: ListView(scrollDirection: Axis.horizontal, padding: const EdgeInsets.all(8), children: [
-                for (var s2 = 1; s2 <= (t.seasons ?? 1); s2++)
+                for (final s2 in t.seasonNumbers)
                   Padding(
                     padding: const EdgeInsets.only(right: 8),
                     child: ChoiceChip(label: Text('Season $s2'), selected: season == s2, onSelected: (_) => set(() => season = s2)),

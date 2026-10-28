@@ -36,7 +36,7 @@ jobs:
           cache-dependency-path: |
             web/package-lock.json
             admin/package-lock.json
-      - run: npm ci
+      - run: npm ci && npm test
         working-directory: web
       - run: npm run build
         working-directory: web
@@ -44,7 +44,7 @@ jobs:
           NEXT_PUBLIC_BASE_PATH: /MyFlix
 
       # Admin dashboard (Next.js) -> /MyFlix/admin/
-      - run: npm ci
+      - run: npm ci && npm test
         working-directory: admin
       - run: npm run build
         working-directory: admin

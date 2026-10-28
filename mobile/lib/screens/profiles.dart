@@ -131,15 +131,19 @@ class _PinScreenState extends State<PinScreen> {
       _error = false;
     });
     if (_pin.length == 4) {
-      if (_pin == widget.profile.settings.pin) {
-        Navigator.pop(context, true);
-      } else {
-        HapticFeedback.heavyImpact();
-        setState(() {
-          _error = true;
-          _pin = '';
-        });
-      }
+      // Checked on the server; the PIN itself never reaches the app
+      context.read<AuthStore>().checkPin(widget.profile.id, _pin).then((ok) {
+        if (!mounted) return;
+        if (ok) {
+          Navigator.pop(context, true);
+        } else {
+          HapticFeedback.heavyImpact();
+          setState(() {
+            _error = true;
+            _pin = '';
+          });
+        }
+      });
     }
   }
 

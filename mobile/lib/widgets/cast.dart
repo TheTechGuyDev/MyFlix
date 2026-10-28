@@ -40,17 +40,29 @@ Future<void> showCastSheet(BuildContext context, {void Function(String device)? 
             Text(cast.connected ? 'Control playback from the bar at the bottom of the app.' : 'Devices on your Wi-Fi network', style: const TextStyle(color: AppColors.muted)),
             const SizedBox(height: 8),
             if (cast.scanning) const Padding(padding: EdgeInsets.all(16), child: Row(children: [SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2)), SizedBox(width: 12), Text('Looking for devices…')])),
+            if (!CastStore.supported)
+              const Padding(padding: EdgeInsets.symmetric(vertical: 8), child: Text('Cast from the MyFlix app on your phone, or use the Cast button in your browser\'s player.', style: TextStyle(color: Colors.white70))),
+            if (cast.error != null) Padding(padding: const EdgeInsets.symmetric(vertical: 6), child: Text(cast.error!, style: const TextStyle(color: AppColors.danger))),
+            if (CastStore.supported && !cast.scanning && !cast.connected && cast.found.isEmpty)
+              Row(children: [
+                const Expanded(child: Text('No TVs found on this Wi-Fi.', style: TextStyle(color: Colors.white70))),
+                TextButton(onPressed: cast.scan, child: const Text('Search again')),
+              ]),
             if (!cast.scanning && !cast.connected)
-              for (final d in CastStore.devices)
+              for (final d in cast.found)
                 ListTile(
                   contentPadding: EdgeInsets.zero,
-                  leading: Icon(d.contains('Chromecast') ? Icons.cast : Icons.tv),
-                  title: Text(d),
-                  onTap: () {
-                    cast.connect(d);
+                  leading: Icon(d.name.toLowerCase().contains('chromecast') ? Icons.cast : Icons.tv),
+                  title: Text(d.name),
+                  onTap: () async {
                     Navigator.pop(ctx);
-                    onConnected?.call(d);
-                    toast(context, 'Connected to $d.');
+                    toast(context, 'Connecting to ${d.name}…');
+                    if (await cast.connect(d)) {
+                      onConnected?.call(d.name);
+                      if (context.mounted) toast(context, 'Connected to ${d.name}.');
+                    } else if (context.mounted) {
+                      toast(context, cast.error ?? "Couldn't connect.");
+                    }
                   },
                 ),
             if (cast.connected)
@@ -65,7 +77,15 @@ Future<void> showCastSheet(BuildContext context, {void Function(String device)? 
               ),
             const Padding(
               padding: EdgeInsets.symmetric(vertical: 8),
-              child: Text("Don't see your TV? Check it's on the same Wi-Fi, or open MyFlix on the TV and use Sign in with phone.", style: TextStyle(color: AppColors.muted, fontSize: 12)),
+              child: Text("Don't see your TV? Check it's on the same Wi-Fi, or open MyFlix on the TV and sign in with a code.", style: TextStyle(color: AppColors.muted, fontSize: 12)),
+            ),
+            TextButton.icon(
+              onPressed: () {
+                Navigator.pop(ctx);
+                context.push('/tv');
+              },
+              icon: const Icon(Icons.tv, size: 18),
+              label: const Text('Sign in on a Smart TV with a code'),
             ),
           ]),
         ),

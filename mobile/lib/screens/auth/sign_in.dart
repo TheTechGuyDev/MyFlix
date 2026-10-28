@@ -71,7 +71,7 @@ class _SignInScreenState extends State<SignInScreen> {
           children: [
             const Text('Sign In', style: TextStyle(fontSize: 30, fontWeight: FontWeight.w800)),
             const SizedBox(height: 24),
-            if (_form != null) ...[AlertBox(_form!), const SizedBox(height: 16)],
+            if (_form != null || context.read<AuthStore>().notice != null) ...[AlertBox(_form ?? context.read<AuthStore>().notice!), const SizedBox(height: 16)],
             AutofillGroup(
               child: Column(children: [
                 AppField(
@@ -137,6 +137,7 @@ class _SignInScreenState extends State<SignInScreen> {
   }
 }
 
+/// Reset by email or SMS: we send a 6-digit code, the member enters it, then picks a new password.
 class ForgotScreen extends StatefulWidget {
   const ForgotScreen({super.key});
   @override
@@ -145,34 +146,64 @@ class ForgotScreen extends StatefulWidget {
 
 class _ForgotScreenState extends State<ForgotScreen> {
   final _value = TextEditingController();
+  final _code = TextEditingController();
+  final _a = TextEditingController();
+  final _b = TextEditingController();
   String _via = 'email';
   String? _err;
-  bool _loading = false, _sent = false;
+  bool _loading = false;
+  int _step = 0; // 0 ask, 1 code, 2 new password
 
-  Future<void> _submit() async {
+  Future<void> _send() async {
     final v = _value.text;
     setState(() => _err = _via == 'email' ? validateEmail(v) : (normalPhone(v).isEmpty ? 'Enter a valid Nigerian phone number.' : null));
     if (_err != null) return;
     setState(() => _loading = true);
-    await context.read<AuthStore>().requestPasswordReset(v);
-    if (mounted) {
-      setState(() {
-        _loading = false;
-        _sent = true;
-      });
-    }
+    final err = await context.read<AuthStore>().requestPasswordReset(v);
+    if (!mounted) return;
+    setState(() {
+      _loading = false;
+      _err = err;
+      if (err == null) _step = 1;
+    });
+  }
+
+  Future<void> _verify() async {
+    if (!RegExp(r'^\d{6}$').hasMatch(_code.text.trim())) return setState(() => _err = 'Enter the 6-digit code.');
+    setState(() => _loading = true);
+    final err = await context.read<AuthStore>().verifyResetCode(_value.text, _code.text);
+    if (!mounted) return;
+    setState(() {
+      _loading = false;
+      _err = err;
+      if (err == null) _step = 2;
+    });
+  }
+
+  Future<void> _save() async {
+    final v = validatePassword(_a.text) ?? (_a.text != _b.text ? "Passwords don't match." : null);
+    if (v != null) return setState(() => _err = v);
+    setState(() => _loading = true);
+    final auth = context.read<AuthStore>();
+    final err = await auth.resetPassword(_a.text);
+    if (!mounted) return;
+    setState(() {
+      _loading = false;
+      _err = err;
+    });
+    if (err == null) context.go(auth.nextStep());
   }
 
   @override
   Widget build(BuildContext context) {
+    final where = _via == 'email' ? 'email' : 'phone';
     return Scaffold(
       appBar: AppBar(title: const Logo(size: 30)),
       body: ListView(padding: const EdgeInsets.all(24), children: [
-        Text(_sent ? (_via == 'email' ? 'Check your email' : 'Check your phone') : 'Forgot your password?', style: const TextStyle(fontSize: 28, fontWeight: FontWeight.w800)),
+        Text(_step == 0 ? 'Forgot your password?' : _step == 1 ? 'Check your $where' : 'Create a new password', style: const TextStyle(fontSize: 28, fontWeight: FontWeight.w800)),
         const SizedBox(height: 12),
-        if (_sent)
-          Text("If an account uses ${_value.text}, we've sent a link to reset your password. It expires in 1 hour.", style: const TextStyle(color: AppColors.muted, fontSize: 15, height: 1.4))
-        else ...[
+        if (_err != null) ...[AlertBox(_err!), const SizedBox(height: 12)],
+        if (_step == 0) ...[
           const Text('How would you like to reset it?', style: TextStyle(color: AppColors.muted, fontSize: 15)),
           const SizedBox(height: 8),
           RadioGroup<String>(
@@ -191,70 +222,29 @@ class _ForgotScreenState extends State<ForgotScreen> {
           AppField(
             label: _via == 'email' ? 'Email address' : 'Phone number (e.g. 0803 123 4567)',
             controller: _value,
-            errorText: _err,
+            errorText: null,
             keyboard: _via == 'email' ? TextInputType.emailAddress : TextInputType.phone,
           ),
-        ],
-        const SizedBox(height: 24),
-        if (!_sent)
-          PrimaryButton(_via == 'email' ? 'Email Me' : 'Text Me', onPressed: _submit, loading: _loading)
-        else ...[
-          PrimaryButton('Back to Sign In', onPressed: () => context.go('/login')),
-          TextButton(onPressed: () => setState(() => _sent = false), child: const Text("Didn't get it? Try again", style: TextStyle(color: Colors.white))),
-        ],
-      ]),
-    );
-  }
-}
-
-class ResetPasswordScreen extends StatefulWidget {
-  final String token;
-  const ResetPasswordScreen({super.key, required this.token});
-  @override
-  State<ResetPasswordScreen> createState() => _ResetPasswordScreenState();
-}
-
-class _ResetPasswordScreenState extends State<ResetPasswordScreen> {
-  final _a = TextEditingController();
-  final _b = TextEditingController();
-  String? _err;
-  bool _loading = false;
-
-  @override
-  Widget build(BuildContext context) {
-    final auth = context.read<AuthStore>();
-    final email = auth.resetEmail(widget.token);
-    return Scaffold(
-      appBar: AppBar(title: const Logo(size: 30)),
-      body: ListView(padding: const EdgeInsets.all(24), children: [
-        if (email == null) ...[
-          const Text('Link expired', style: TextStyle(fontSize: 28, fontWeight: FontWeight.w800)),
-          const SizedBox(height: 12),
-          const Text('This password reset link has expired or was already used. Links work for 1 hour.', style: TextStyle(color: AppColors.muted, fontSize: 15)),
           const SizedBox(height: 24),
-          PrimaryButton('Send a new link', onPressed: () => context.go('/forgot')),
-        ] else ...[
-          const Text('Create a new password', style: TextStyle(fontSize: 28, fontWeight: FontWeight.w800)),
-          const SizedBox(height: 8),
-          Text('For $email. Use 6 to 60 characters.', style: const TextStyle(color: AppColors.muted, fontSize: 15)),
+          PrimaryButton(_via == 'email' ? 'Email Me a Code' : 'Text Me a Code', onPressed: _send, loading: _loading),
+          if (_via == 'sms') const Padding(padding: EdgeInsets.only(top: 12), child: Text('SMS works if you added and verified your number in Account, Security.', style: TextStyle(color: AppColors.muted, fontSize: 13))),
+        ],
+        if (_step == 1) ...[
+          Text("If an account uses ${_value.text}, we've sent a 6-digit code. It expires in 1 hour.", style: const TextStyle(color: AppColors.muted, fontSize: 15, height: 1.4)),
+          const SizedBox(height: 16),
+          AppField(label: '6-digit code', controller: _code, keyboard: TextInputType.number, autofill: const [AutofillHints.oneTimeCode], onSubmitted: (_) => _verify()),
           const SizedBox(height: 20),
-          if (_err != null) ...[AlertBox(_err!), const SizedBox(height: 12)],
+          PrimaryButton('Continue', onPressed: _verify, loading: _loading),
+          TextButton(onPressed: () => setState(() => _step = 0), child: const Text("Didn't get it? Try again", style: TextStyle(color: Colors.white))),
+        ],
+        if (_step == 2) ...[
+          const Text('Use 6 to 60 characters.', style: TextStyle(color: AppColors.muted, fontSize: 15)),
+          const SizedBox(height: 16),
           AppField(label: 'New password', controller: _a, password: true),
           const SizedBox(height: 12),
           AppField(label: 'Confirm new password', controller: _b, password: true),
           const SizedBox(height: 20),
-          PrimaryButton('Save and sign in', loading: _loading, onPressed: () async {
-            final v = validatePassword(_a.text) ?? (_a.text != _b.text ? "Passwords don't match." : null);
-            if (v != null) return setState(() => _err = v);
-            setState(() => _loading = true);
-            final err = await auth.resetPassword(widget.token, _a.text);
-            if (!context.mounted) return;
-            setState(() {
-              _loading = false;
-              _err = err;
-            });
-            if (err == null) context.go(auth.nextStep());
-          }),
+          PrimaryButton('Save and sign in', loading: _loading, onPressed: _save),
         ],
       ]),
     );

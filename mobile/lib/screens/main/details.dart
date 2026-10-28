@@ -7,6 +7,7 @@ import '../../data/catalog.dart';
 import '../../data/library_store.dart';
 import '../../data/models.dart';
 import '../../theme.dart';
+import '../../data/live.dart';
 import '../../widgets/common.dart';
 import '../../widgets/titles.dart';
 import '../../i18n.dart';
@@ -14,7 +15,8 @@ import '../../i18n.dart';
 Future<void> startDownload(BuildContext context, MediaTitle t, {int? season, int? episode}) async {
   final lib = context.read<LibraryStore>();
   final plan = Catalog.plan(context.read<AuthStore>().account?.planId);
-  final err = await lib.startDownload(t.id, season: season, episode: episode, maxDownloads: plan?.downloads ?? 1);
+  if (!Protection.downloads) return toast(context, 'Downloads are turned off right now.');
+  final err = await lib.startDownload(t.id, season: season, episode: episode, maxDownloads: plan?.downloads ?? 1, deviceName: LiveStreams.device);
   if (err != null && context.mounted) toast(context, err);
 }
 

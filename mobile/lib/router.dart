@@ -17,14 +17,14 @@ import 'screens/profiles.dart';
 import 'screens/splash.dart';
 
 GoRouter buildRouter(AuthStore auth) {
-  const public = {'/', '/welcome', '/login', '/forgot', '/signup', '/reset'};
+  const public = {'/', '/welcome', '/login', '/forgot', '/signup'};
   return GoRouter(
     initialLocation: '/',
     refreshListenable: auth,
     redirect: (context, state) {
       final loc = state.matchedLocation;
       final signedIn = auth.account != null;
-      if (loc == '/reset') return null;
+      if (loc == '/forgot') return null; // finishing a reset signs the member in mid-flow
       if (!signedIn) return public.contains(loc) ? null : '/login';
       if (loc == '/') return null;
       final next = auth.nextStep();
@@ -47,7 +47,6 @@ GoRouter buildRouter(AuthStore auth) {
       GoRoute(path: '/welcome', builder: (_, _) => const OnboardingScreen()),
       GoRoute(path: '/login', builder: (_, _) => const SignInScreen()),
       GoRoute(path: '/forgot', builder: (_, _) => const ForgotScreen()),
-      GoRoute(path: '/reset', builder: (_, s) => ResetPasswordScreen(token: s.uri.queryParameters['token'] ?? '')),
       GoRoute(path: '/signup', builder: (_, _) => const CreateAccountScreen()),
       GoRoute(path: '/signup/plan', builder: (_, _) => const PlanScreen()),
       GoRoute(path: '/signup/payment', builder: (_, _) => const PaymentScreen()),

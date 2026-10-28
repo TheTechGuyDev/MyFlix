@@ -2,13 +2,13 @@ import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:provider/provider.dart';
 import 'package:share_plus/share_plus.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 import 'package:video_player/video_player.dart';
 import '../../data/auth_store.dart';
 import '../../data/catalog.dart';
 import '../../data/library_store.dart';
 import '../../data/models.dart';
-import '../../data/shared_store.dart';
+import '../../data/backend.dart';
+import '../../data/live.dart';
 import '../../i18n.dart';
 import '../../theme.dart';
 import '../../widgets/common.dart';
@@ -20,31 +20,24 @@ class ClipItem {
   const ClipItem(this.id, this.titleId, this.start, this.end, this.caption);
 }
 
-const _captions = ['This scene though', 'Wait for it…', 'No one saw this coming', 'The way she said it!', 'Lagos traffic be like', 'Plot twist alert', 'Pure vibes', 'When the music hits'];
+const _captions = ['This scene though', 'Wait for it…', 'No one saw this coming', 'The way she said it!', 'Plot twist alert', 'Pure vibes', 'When the music hits'];
 
-/// Admin-curated clips (Home Curation > Clips feed), else an automatic mix.
+/// Admin-curated clips (Home Curation > Clips feed), else a mix from titles that have video.
 List<(ClipItem, MediaTitle)> clipsFor({required bool kids, required String max}) {
-  final curated = (SharedStore.read<Map>('myflix.admin.curation', {})['clips'] as List?) ?? [];
+  final curated = (Catalog.curation?['clips'] as List?) ?? [];
   final list = curated.isNotEmpty
-      ? [for (final c in curated) ClipItem(c['id'], c['titleId'], (c['start'] as num).toInt(), (c['end'] as num).toInt(), c['caption'] ?? '')]
+      ? [for (final c in curated) if (c is Map) ClipItem('${c['id']}', '${c['titleId']}', (c['start'] as num).toInt(), (c['end'] as num).toInt(), '${c['caption'] ?? ''}')]
       : [
-          for (final (i, t) in Catalog.titles.where((t) => t.comingSoon == null).take(14).indexed) ClipItem('c-${t.id}', t.id, (i * 13) % 80, (i * 13) % 80 + 22, _captions[i % _captions.length]),
+          for (final (i, t) in Catalog.titles.where((t) => t.comingSoon == null && t.hasVideo).take(14).indexed) ClipItem('c-${t.id}', t.id, (i * 13) % 80, (i * 13) % 80 + 22, _captions[i % _captions.length]),
         ];
   return [
     for (final c in list)
-      if (Catalog.byId(c.titleId) case final t? when t.comingSoon == null && Catalog.allowed(t, max) && (!kids || t.kids)) (c, t),
+      if (Catalog.byId(c.titleId) case final t? when t.comingSoon == null && t.hasVideo && Catalog.allowed(t, max) && (!kids || t.kids)) (c, t),
   ];
 }
 
-int _baseLaughs(String id) {
-  var h = 0;
-  for (final c in id.codeUnits) {
-    h = (h * 33 + c) & 0xffffffff;
-  }
-  return 800 + h % 24000;
-}
-
-String _compact(int n) => n >= 1000 ? '${(n / 1000).toStringAsFixed(n >= 10000 ? 0 : 1)}K' : '$n';
+/// One stream id for the whole clips session, so scrolling doesn't use up screens.
+final _clipStream = 'clips-${AuthStore.newId()}';
 
 class ClipsScreen extends StatefulWidget {
   const ClipsScreen({super.key});
@@ -59,14 +52,22 @@ class _ClipsScreenState extends State<ClipsScreen> {
   String? _pid;
 
   Future<void> _loadReacts(String pid) async {
-    final prefs = await SharedPreferences.getInstance();
-    if (mounted) setState(() => _laughs = (prefs.getStringList('myflix.clipReacts.$pid') ?? []).toSet());
+    try {
+      final r = await sb.from('clip_reactions').select('clip_id').eq('profile_id', pid);
+      if (mounted) setState(() => _laughs = {for (final x in r) '${x['clip_id']}'});
+    } catch (_) {}
   }
 
   Future<void> _toggleLaugh(String pid, String id) async {
-    setState(() => _laughs.contains(id) ? _laughs.remove(id) : _laughs.add(id));
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setStringList('myflix.clipReacts.$pid', _laughs.toList());
+    final on = _laughs.contains(id);
+    setState(() => on ? _laughs.remove(id) : _laughs.add(id));
+    try {
+      if (on) {
+        await sb.from('clip_reactions').delete().eq('profile_id', pid).eq('clip_id', id);
+      } else {
+        await sb.from('clip_reactions').upsert({'profile_id': pid, 'clip_id': id});
+      }
+    } catch (_) {}
   }
 
   @override
@@ -106,7 +107,7 @@ class _ClipsScreenState extends State<ClipsScreen> {
                 right: 10,
                 bottom: 150,
                 child: Column(children: [
-                  _Action(icon: Icons.sentiment_very_satisfied, label: _compact(_baseLaughs(clip.id) + (laughed ? 1 : 0)), on: laughed, onTap: () => _toggleLaugh(p.id, clip.id)),
+                  _Action(icon: Icons.sentiment_very_satisfied, label: context.tr('Laugh'), on: laughed, onTap: () => _toggleLaugh(p.id, clip.id)),
                   _Action(icon: lib.inList(t.id) ? Icons.check : Icons.add, label: context.tr('My List'), onTap: () => lib.toggleList(t.id)),
                   _Action(
                     icon: Icons.share_outlined,
@@ -217,7 +218,19 @@ class _ClipVideoState extends State<_ClipVideo> {
   @override
   void initState() {
     super.initState();
-    final c = VideoPlayerController.networkUrl(Uri.parse(Catalog.demoMp4));
+    _open();
+  }
+
+  /// Signed stream for this clip's title (checks membership; the clips feed shares one screen).
+  Future<void> _open() async {
+    final pid = context.read<AuthStore>().activeProfile?.id;
+    String? src;
+    try {
+      final r = await fn('playback', {'title_id': widget.title.id, 'season': 1, 'episode': 1, 'stream_id': _clipStream, 'profile_id': pid, 'device': LiveStreams.device});
+      src = (r['sources'] as List?)?.firstOrNull as String?;
+    } catch (_) {}
+    if (src == null || !mounted) return;
+    final c = VideoPlayerController.networkUrl(Uri.parse(src), formatHint: src.contains('.m3u8') ? VideoFormat.hls : null);
     c.initialize().then((_) async {
       if (!mounted) return c.dispose();
       final len = c.value.duration.inSeconds;

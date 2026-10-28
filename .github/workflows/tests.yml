@@ -1,0 +1,53 @@
+name: Tests
+
+# Runs on every push and pull request: website, admin, app and a browser smoke test.
+on:
+  push:
+    paths-ignore: ["**.md"]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  web-admin:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            web/package-lock.json
+            admin/package-lock.json
+      - name: Website checks
+        working-directory: web
+        run: npm ci && npm run lint && npm run typecheck && npm test
+      - name: Admin checks
+        working-directory: admin
+        run: npm ci && npm run lint && npm run typecheck && npm test
+      - name: Build both
+        run: |
+          (cd web && NEXT_PUBLIC_BASE_PATH=/MyFlix npm run build)
+          (cd admin && NEXT_PUBLIC_BASE_PATH=/MyFlix/admin NEXT_PUBLIC_SITE_URL=/MyFlix/ npm run build)
+          cp -r admin/out web/out/admin
+      - name: Browser smoke test
+        run: |
+          npm i --no-save playwright@1.56.1
+          npx playwright install --with-deps chromium
+          node scripts/smoke.mjs web/out
+
+  app:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: mobile
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.47.8
+          cache: true
+      - run: flutter pub get
+      - run: flutter analyze --no-fatal-infos
+      - run: flutter test

@@ -12,9 +12,21 @@ serve(async (req) => {
   const cfg = await settings();
   if (cfg.maintenance === true) throw new HttpError(503, String(cfg.maintenanceMessage || "MyFlix is getting an upgrade. We'll be back shortly."));
 
-  // Membership, suspension, profile ownership and screen limit (also used as the heartbeat)
-  const { data: claim, error } = await asUser(req).rpc("claim_stream", { p_id: streamId, p_profile: b.profile_id, p_device: String(b.device ?? "Browser"), p_title: titleId });
-  if (error) throw new HttpError(400, error.message);
+  // Membership, suspension, profile ownership and screen limit (also used as the heartbeat).
+  // Downloads don't take a screen, so they only check the membership.
+  let claim: { ok: boolean; max_height?: number; reason?: string } | null;
+  if (b.download) {
+    if (cfg.downloadsEnabled === false) throw new HttpError(403, "Downloads are turned off right now.");
+    const user = await requireUser(req);
+    const { data: acc } = await admin.from("accounts").select("plan_id").eq("id", user.id).single();
+    const { data: access } = await admin.rpc("has_access", { uid: user.id });
+    const { data: plan } = await admin.from("plans").select("max_height, downloads").eq("id", acc?.plan_id ?? "").maybeSingle();
+    claim = access && (plan?.downloads ?? 0) > 0 ? { ok: true, max_height: plan?.max_height ?? 720 } : { ok: false, reason: access ? "plan" : "membership" };
+  } else {
+    const { data, error } = await asUser(req).rpc("claim_stream", { p_id: streamId, p_profile: b.profile_id, p_device: String(b.device ?? "Browser"), p_title: titleId });
+    if (error) throw new HttpError(400, error.message);
+    claim = data;
+  }
   if (!claim?.ok) return json({ ok: false, ...claim });
   if (b.heartbeat) return json({ ok: true });
 

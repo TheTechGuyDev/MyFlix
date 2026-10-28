@@ -1,5 +1,9 @@
+import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
+import 'package:share_plus/share_plus.dart';
+import 'package:url_launcher/url_launcher.dart';
+import '../../data/backend.dart';
 import 'package:provider/provider.dart';
 import '../../data/auth_store.dart';
 import '../../data/messages.dart';
@@ -25,7 +29,52 @@ String methodLabel(Payment? p) => p == null
         ? 'Card ending in ${p.last4 ?? '••••'}'
         : p.method == 'transfer'
             ? 'Bank transfer'
-            : 'USSD';
+            : p.method == 'credit'
+                ? 'Credit or promo'
+                : p.method == 'ussd'
+                    ? 'USSD'
+                    : 'Bank account';
+
+void _open(String page) => launchUrl(Uri.parse('$siteUrl/$page/'), mode: LaunchMode.externalApplication);
+
+Future<void> _redeemGift(BuildContext context) async {
+  final auth = context.read<AuthStore>();
+  final c = TextEditingController();
+  String? err;
+  bool loading = false;
+  await showModalBottomSheet(
+    context: context,
+    isScrollControlled: true,
+    backgroundColor: AppColors.ink2,
+    builder: (ctx) => StatefulBuilder(
+      builder: (ctx, set) => Padding(
+        padding: EdgeInsets.fromLTRB(18, 18, 18, MediaQuery.of(ctx).viewInsets.bottom + 18),
+        child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+          const Text('Redeem a gift card', style: TextStyle(fontSize: 20, fontWeight: FontWeight.w800)),
+          const SizedBox(height: 6),
+          const Text('The amount is added to your account credit and used for your next payments.', style: TextStyle(color: AppColors.muted)),
+          const SizedBox(height: 14),
+          if (err != null) ...[AlertBox(err!), const SizedBox(height: 10)],
+          AppField(label: 'Gift code (MYF-XXXX)', controller: c),
+          const SizedBox(height: 16),
+          PrimaryButton('Redeem', loading: loading, onPressed: () async {
+            set(() => loading = true);
+            final (e, n) = await auth.redeemGift(c.text);
+            if (e != null) {
+              set(() {
+                err = e;
+                loading = false;
+              });
+              return;
+            }
+            if (ctx.mounted) Navigator.pop(ctx);
+            if (context.mounted) toast(context, '${naira(n ?? 0)} added to your account credit.');
+          }),
+        ]),
+      ),
+    ),
+  );
+}
 
 class _Section extends StatelessWidget {
   final String? title;
@@ -85,10 +134,11 @@ class AccountScreen extends StatelessWidget {
                 padding: const EdgeInsets.all(16),
                 child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                   Text('${plan?.name ?? ''} plan', style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w800)),
-                  Text('${naira(plan?.price ?? 0)}/month  •  ${plan?.resolution ?? ''}', style: const TextStyle(color: AppColors.muted)),
+                  Text(a.billingCycle == 'annual' && plan != null ? '${naira(annualPrice(plan))}/year  •  ${plan.resolution}' : '${naira(plan?.price ?? 0)}/month  •  ${plan?.resolution ?? ''}', style: const TextStyle(color: AppColors.muted)),
                   const SizedBox(height: 8),
-                  Text(cancelled ? "You won't be charged again." : 'Next payment: ${fmtDate(a.payment?.renewsAt)}', style: const TextStyle(color: AppColors.muted)),
+                  Text(!a.hasAccess ? 'No active membership' : cancelled ? "You won't be charged again." : a.cardReusable ? 'Next payment: ${fmtDate(a.paidUntil)}' : 'Paid until ${fmtDate(a.paidUntil)}. Renew before then to keep watching.', style: const TextStyle(color: AppColors.muted)),
                   Text(methodLabel(a.payment), style: const TextStyle(color: AppColors.muted)),
+                  if (a.credit > 0) Text('Credit: ${naira(a.credit)}', style: const TextStyle(color: AppColors.brandBright)),
                   if (a.billingCycle == 'annual') const Text('Billed yearly', style: TextStyle(color: AppColors.muted)),
                   if (a.promoLabel != null) Text('Promo: ${a.promoLabel}', style: const TextStyle(color: AppColors.brandBright)),
                 ]),
@@ -100,7 +150,7 @@ class AccountScreen extends StatelessWidget {
           _row('Change plan', onTap: () => context.push('/account/plan')),
           _row('Manage payment method', onTap: () => context.push('/account/payment')),
           _row('Billing history', sub: 'Receipts for every payment', onTap: () => context.push('/account/billing')),
-          _row('Redeem gift card', sub: 'Opens the MyFlix website', onTap: () => openLink(context, giftRedeemUrl)),
+          _row('Redeem gift card', sub: 'Add a MyFlix gift card to your credit', onTap: () => _redeemGift(context)),
           cancelled
               ? _row('Restart membership', color: AppColors.brandBright, onTap: () => context.push('/account/cancel'))
               : _row('Cancel membership', color: AppColors.danger, onTap: () => context.push('/account/cancel')),
@@ -110,6 +160,12 @@ class AccountScreen extends StatelessWidget {
           _row('Password & phone', sub: a.phone != null ? prettyPhone(a.phone!) : 'Add a phone number for SMS sign-in', onTap: () => context.push('/account/security')),
           _row('Devices', sub: '${auth.devices().length} signed in', onTap: () => context.push('/account/devices')),
           _row('Notification preferences', onTap: () => context.push('/account/notifications')),
+        ]),
+        _Section(title: 'YOUR DATA', children: [
+          _row('Download your data', sub: 'A copy of your account, profiles and history', onTap: () => _export(context)),
+          _row('Delete account', sub: 'Permanently remove your account', color: AppColors.danger, onTap: () => _delete(context)),
+          _row('Privacy Policy', onTap: () => _open('privacy')),
+          _row('Terms of Use', onTap: () => _open('terms')),
         ]),
         _Section(title: 'PROFILES & PARENTAL CONTROLS', children: [
           for (final p in a.profiles)
@@ -127,6 +183,57 @@ class AccountScreen extends StatelessWidget {
   }
 }
 
+Future<void> _export(BuildContext context) async {
+  toast(context, 'Preparing your data…');
+  final (err, data) = await context.read<AuthStore>().exportData();
+  if (!context.mounted) return;
+  if (err != null) return toast(context, err);
+  final text = const JsonEncoder.withIndent('  ').convert(data);
+  await SharePlus.instance.share(ShareParams(text: text, subject: 'My MyFlix data'));
+}
+
+Future<void> _delete(BuildContext context) async {
+  final auth = context.read<AuthStore>();
+  final c = TextEditingController();
+  String? err;
+  bool loading = false;
+  await showModalBottomSheet(
+    context: context,
+    isScrollControlled: true,
+    backgroundColor: AppColors.ink2,
+    builder: (ctx) => StatefulBuilder(
+      builder: (ctx, set) => Padding(
+        padding: EdgeInsets.fromLTRB(18, 18, 18, MediaQuery.of(ctx).viewInsets.bottom + 18),
+        child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+          const Text('Delete your account?', style: TextStyle(fontSize: 20, fontWeight: FontWeight.w800)),
+          const SizedBox(height: 8),
+          const Text(
+            'This permanently deletes your account, profiles, My List, ratings and viewing history, and cancels your membership with no refund for the time left. Payment records are kept as tax law requires. This cannot be undone.',
+            style: TextStyle(color: Colors.white70, height: 1.4),
+          ),
+          const SizedBox(height: 14),
+          if (err != null) ...[AlertBox(err!), const SizedBox(height: 10)],
+          AppField(label: 'Type your email to confirm', controller: c, keyboard: TextInputType.emailAddress),
+          const SizedBox(height: 16),
+          PrimaryButton('Delete my account', color: AppColors.danger, loading: loading, onPressed: () async {
+            set(() => loading = true);
+            final e = await auth.deleteAccount(c.text);
+            if (e != null) {
+              set(() {
+                err = e;
+                loading = false;
+              });
+              return;
+            }
+            if (ctx.mounted) Navigator.pop(ctx);
+            if (context.mounted) context.go('/login');
+          }),
+        ]),
+      ),
+    ),
+  );
+}
+
 /* ======================= Change plan ======================= */
 class ChangePlanScreen extends StatefulWidget {
   const ChangePlanScreen({super.key});
@@ -135,7 +242,7 @@ class ChangePlanScreen extends StatefulWidget {
 }
 
 class _ChangePlanScreenState extends State<ChangePlanScreen> {
-  late String _sel = context.read<AuthStore>().account!.planId ?? 'standard';
+  late String _sel = context.read<AuthStore>().account!.planId ?? (Catalog.plans.isEmpty ? '' : Catalog.plans.first.id);
   bool _loading = false;
   @override
   Widget build(BuildContext context) {
@@ -176,16 +283,17 @@ class _ChangePlanScreenState extends State<ChangePlanScreen> {
           Text(
             (cur != null && chosen.price > cur.price)
                 ? "You'll get ${chosen.name} features right away. The difference is added to your next bill."
-                : 'Your new price of ${naira(chosen.price)} starts on ${fmtDate(a.payment?.renewsAt)}.',
+                : 'Your new price of ${naira(chosen.price)} starts on ${fmtDate(a.paidUntil)}.',
             style: const TextStyle(color: AppColors.muted),
           ),
           const SizedBox(height: 14),
           PrimaryButton('Confirm change', loading: _loading, onPressed: () async {
             setState(() => _loading = true);
-            await context.read<AuthStore>().changePlan(_sel);
+            final (err, msg) = await context.read<AuthStore>().changePlan(_sel);
             if (!context.mounted) return;
-            toast(context, "You're now on the ${chosen.name} plan.");
-            context.pop();
+            setState(() => _loading = false);
+            toast(context, err ?? msg ?? 'Done.');
+            if (err == null) context.pop();
           }),
         ],
       ]),
@@ -194,35 +302,46 @@ class _ChangePlanScreenState extends State<ChangePlanScreen> {
 }
 
 /* ======================= Payment ======================= */
+/// Card payments renew automatically. To change the card, Paystack checks the new one with a ₦50
+/// charge that is refunded straight away.
 class ManagePaymentScreen extends StatefulWidget {
   const ManagePaymentScreen({super.key});
   @override
   State<ManagePaymentScreen> createState() => _ManagePaymentScreenState();
 }
 
-class _ManagePaymentScreenState extends State<ManagePaymentScreen> {
-  late String _method = context.read<AuthStore>().account!.payment?.method ?? 'card';
-  final _num = TextEditingController(), _exp = TextEditingController(), _cvv = TextEditingController();
-  Map<String, String?> _err = {};
-  bool _loading = false;
+class _ManagePaymentScreenState extends State<ManagePaymentScreen> with WidgetsBindingObserver {
+  bool _loading = false, _waiting = false;
 
-  Future<void> _save() async {
-    String? last4;
-    if (_method == 'card') {
-      final d = _num.text.replaceAll(RegExp(r'\D'), '');
-      setState(() => _err = {
-            'num': d.length < 16 ? 'Please enter a valid card number.' : null,
-            'exp': RegExp(r'^\d{2}/\d{2}$').hasMatch(_exp.text) ? null : 'Use MM/YY.',
-            'cvv': RegExp(r'^\d{3,4}$').hasMatch(_cvv.text) ? null : 'Please enter a valid CVV.',
-          });
-      if (_err.values.any((e) => e != null)) return;
-      last4 = d.substring(d.length - 4);
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed && _waiting) {
+      _waiting = false;
+      // The webhook saves the new card; give it a moment, then reload
+      Future.delayed(const Duration(seconds: 2), () => mounted ? context.read<AuthStore>().refresh() : null);
     }
+  }
+
+  Future<void> _update() async {
     setState(() => _loading = true);
-    await context.read<AuthStore>().updatePaymentMethod(_method, last4: last4);
+    final (err, url) = await context.read<AuthStore>().updatePaymentMethod();
     if (!mounted) return;
-    toast(context, 'Payment method updated.');
-    context.pop();
+    setState(() => _loading = false);
+    if (err != null || url == null) return toast(context, err ?? "Couldn't open Paystack. Try again.");
+    _waiting = true;
+    await launchUrl(Uri.parse(url), mode: LaunchMode.externalApplication);
   }
 
   @override
@@ -231,51 +350,27 @@ class _ManagePaymentScreenState extends State<ManagePaymentScreen> {
     return Scaffold(
       appBar: AppBar(title: const Text('Payment method', style: TextStyle(fontWeight: FontWeight.w800))),
       body: ListView(padding: const EdgeInsets.all(16), children: [
-        Text('Current: ${methodLabel(a.payment)}', style: const TextStyle(color: AppColors.muted)),
-        const SizedBox(height: 14),
-        SegmentedButton<String>(
-          segments: const [
-            ButtonSegment(value: 'card', label: Text('Card'), icon: Icon(Icons.credit_card)),
-            ButtonSegment(value: 'transfer', label: Text('Transfer'), icon: Icon(Icons.account_balance)),
-            ButtonSegment(value: 'ussd', label: Text('USSD'), icon: Icon(Icons.dialpad)),
-          ],
-          selected: {_method},
-          onSelectionChanged: (s) => setState(() => _method = s.first),
-          style: SegmentedButton.styleFrom(selectedBackgroundColor: AppColors.brand, selectedForegroundColor: Colors.white),
+        Container(
+          padding: const EdgeInsets.all(16),
+          decoration: BoxDecoration(color: AppColors.ink2, borderRadius: BorderRadius.circular(12)),
+          child: Row(children: [
+            const Icon(Icons.credit_card, size: 30),
+            const SizedBox(width: 14),
+            Expanded(
+              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Text(a.cardLast4 != null ? '${(a.cardType ?? 'Card').trim()} ending in ${a.cardLast4}' : 'No saved card', style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 16)),
+                Text(a.cardReusable ? 'Used for automatic renewals' : 'You renew by paying before your membership ends', style: const TextStyle(color: AppColors.muted)),
+              ]),
+            ),
+          ]),
         ),
         const SizedBox(height: 18),
-        if (_method == 'card') ...[
-          AppField(label: 'Card number', controller: _num, errorText: _err['num'], keyboard: TextInputType.number, onChanged: (v) {
-            final d = v.replaceAll(RegExp(r'\D'), '');
-            final f = d.substring(0, d.length.clamp(0, 19)).replaceAllMapped(RegExp(r'.{4}'), (m) => '${m[0]} ').trim();
-            if (f != v) _num.value = TextEditingValue(text: f, selection: TextSelection.collapsed(offset: f.length));
-          }),
-          const SizedBox(height: 12),
-          Row(children: [
-            Expanded(child: AppField(label: 'Expiry (MM/YY)', controller: _exp, errorText: _err['exp'], keyboard: TextInputType.number, onChanged: (v) {
-              final d = v.replaceAll(RegExp(r'\D'), '');
-              final c = d.substring(0, d.length.clamp(0, 4));
-              final f = c.length > 2 ? '${c.substring(0, 2)}/${c.substring(2)}' : c;
-              if (f != v) _exp.value = TextEditingValue(text: f, selection: TextSelection.collapsed(offset: f.length));
-            })),
-            const SizedBox(width: 12),
-            Expanded(child: AppField(label: 'CVV', controller: _cvv, errorText: _err['cvv'], keyboard: TextInputType.number, password: true)),
-          ]),
-        ] else
-          Container(
-            padding: const EdgeInsets.all(16),
-            decoration: BoxDecoration(color: AppColors.ink2, borderRadius: BorderRadius.circular(10)),
-            child: Text(
-              _method == 'transfer'
-                  ? 'Each month we send you a one-time account number to transfer your subscription fee to.'
-                  : 'Each month we send you a USSD code to dial from the phone linked to your bank account.',
-              style: const TextStyle(color: Colors.white70, height: 1.4),
-            ),
-          ),
-        const SizedBox(height: 20),
-        PrimaryButton('Save', onPressed: _save, loading: _loading),
-        const SizedBox(height: 10),
-        const Text('Demo mode: no card details are stored.', style: TextStyle(color: AppColors.muted, fontSize: 12)),
+        PrimaryButton(a.cardLast4 != null ? 'Use a different card' : 'Add a card for automatic renewal', onPressed: _update, loading: _loading),
+        const SizedBox(height: 14),
+        const Text(
+          "Paystack checks your card with a ₦50 charge that is refunded straight away. MyFlix never sees your card number. Paying by bank transfer or USSD? You'll pay for each period yourself; we'll remind you before it ends.",
+          style: TextStyle(color: AppColors.muted, height: 1.4),
+        ),
       ]),
     );
   }
@@ -287,25 +382,34 @@ class BillingScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final a = context.watch<AuthStore>().account!;
-    final rows = a.billing.isNotEmpty
-        ? a.billing
-        : [
-            if (a.payment != null)
-              BillingRecord(id: 'INV-00000001', date: a.payment!.paidAt, planId: a.planId ?? 'standard', method: a.payment!.method, last4: a.payment!.last4, amount: Catalog.plan(a.planId)?.price ?? 0),
-          ];
+    final rows = a.billing;
     return Scaffold(
       appBar: AppBar(title: const Text('Billing history', style: TextStyle(fontWeight: FontWeight.w800))),
       body: ListView(children: [
         if (a.payment != null && a.cancelAt == null)
-          Padding(padding: const EdgeInsets.all(16), child: Text('Next payment: ${fmtDate(a.payment!.renewsAt)}', style: const TextStyle(color: AppColors.muted))),
+          Padding(padding: const EdgeInsets.all(16), child: Text('${a.cardReusable ? 'Next payment' : 'Paid until'}: ${fmtDate(a.paidUntil)}', style: const TextStyle(color: AppColors.muted))),
         for (final r in rows)
           ListTile(
-            title: Text('MyFlix ${Catalog.plan(r.planId)?.name ?? ''} (monthly)', style: const TextStyle(fontWeight: FontWeight.w600)),
-            subtitle: Text('${fmtDate(r.date)}  •  ${r.method == 'card' ? 'Card •••• ${r.last4 ?? ''}' : r.method == 'transfer' ? 'Bank transfer' : 'USSD'}  •  ${r.status}', style: const TextStyle(color: AppColors.muted)),
+            title: Text('MyFlix ${Catalog.plan(r.planId)?.name ?? ''}', style: const TextStyle(fontWeight: FontWeight.w600)),
+            subtitle: Text('${fmtDate(r.date)}  •  ${methodLabel(Payment(method: r.method, last4: r.last4, paidAt: r.date, renewsAt: r.date))}  •  ${r.status}', style: const TextStyle(color: AppColors.muted)),
             trailing: Column(mainAxisAlignment: MainAxisAlignment.center, crossAxisAlignment: CrossAxisAlignment.end, children: [
               Text(naira(r.amount), style: const TextStyle(fontWeight: FontWeight.w800)),
               GestureDetector(
-                onTap: () => toast(context, 'Receipt ${r.id} sent to ${a.email}.'),
+                onTap: () => showDialog(
+                  context: context,
+                  builder: (_) => AlertDialog(
+                    backgroundColor: AppColors.ink2,
+                    title: const Text('Receipt'),
+                    content: Text(
+                      'MyFlix ${Catalog.plan(r.planId)?.name ?? ''} plan\n${naira(r.amount)} · ${r.status}\n${fmtDate(r.date)}\nReference: ${r.id}\nBilled to: ${a.email}\n\nA copy was emailed to you when you paid.',
+                      style: const TextStyle(height: 1.5),
+                    ),
+                    actions: [
+                      TextButton(onPressed: () => SharePlus.instance.share(ShareParams(text: 'MyFlix receipt ${r.id}: ${naira(r.amount)} on ${fmtDate(r.date)} (${r.status})')), child: const Text('Share')),
+                      TextButton(onPressed: () => Navigator.pop(context), child: const Text('Close')),
+                    ],
+                  ),
+                ),
                 child: const Text('Receipt', style: TextStyle(color: AppColors.brandBright, fontWeight: FontWeight.w700, fontSize: 12)),
               ),
             ]),
@@ -340,14 +444,15 @@ class _CancelScreenState extends State<CancelScreen> {
           const SizedBox(height: 24),
           PrimaryButton('Restart Membership', loading: _loading, onPressed: () async {
             setState(() => _loading = true);
-            await auth.restartMembership();
+            final err = await auth.restartMembership();
             if (!context.mounted) return;
-            toast(context, 'Welcome back! Your membership has been restarted.');
-            context.pop();
+            setState(() => _loading = false);
+            toast(context, err ?? 'Welcome back! Your membership has been restarted.');
+            if (err == null) context.pop();
           }),
         ] else ...[
           for (final s in [
-            'Your cancellation takes effect at the end of your billing period on ${fmtDate(a.payment?.renewsAt)}.',
+            'Your cancellation takes effect at the end of your billing period on ${fmtDate(a.paidUntil)}.',
             'You can keep watching until then.',
             'Restart anytime. Your profiles, My List and history are kept for 10 months.',
           ])
@@ -361,10 +466,11 @@ class _CancelScreenState extends State<CancelScreen> {
           const SizedBox(height: 18),
           PrimaryButton('Finish Cancellation', color: AppColors.danger, loading: _loading, onPressed: () async {
             setState(() => _loading = true);
-            await auth.cancelMembership();
+            final err = await auth.cancelMembership();
             if (!context.mounted) return;
-            toast(context, 'Your membership has been cancelled.');
-            context.pop();
+            setState(() => _loading = false);
+            toast(context, err ?? 'Your membership has been cancelled.');
+            if (err == null) context.pop();
           }),
           const SizedBox(height: 10),
           OutlinedButton(
@@ -457,7 +563,7 @@ class SecurityScreen extends StatelessWidget {
                 return;
               }
               if (ctx.mounted) Navigator.pop(ctx);
-              if (context.mounted) toast(context, 'Saved.');
+              if (context.mounted) toast(context, mode == 'email' ? 'Check ${a.text.trim()} to confirm your new email.' : 'Saved.');
             }),
           ]),
         ),
@@ -483,7 +589,9 @@ class SecurityScreen extends StatelessWidget {
             title: const Text('Sign out of all devices', style: TextStyle(fontWeight: FontWeight.w600)),
             subtitle: const Text('Signs MyFlix out on every TV, phone, tablet and computer, including this one.', style: TextStyle(color: AppColors.muted)),
             onTap: () async {
-              await auth.signOut();
+              final err = await auth.signOutEverywhere();
+              if (err != null && context.mounted) return toast(context, err);
+              if (context.mounted) context.go('/login');
             },
           ),
         ]),
@@ -502,23 +610,24 @@ class DevicesScreen extends StatelessWidget {
       appBar: AppBar(title: const Text('Devices', style: TextStyle(fontWeight: FontWeight.w800))),
       body: ListView(children: [
         const Padding(padding: EdgeInsets.all(16), child: Text('Devices that recently used your account.', style: TextStyle(color: AppColors.muted))),
+        if (auth.devices().isEmpty) const Padding(padding: EdgeInsets.all(16), child: Text('No devices yet.', style: TextStyle(color: AppColors.muted))),
         for (final d in auth.devices())
           ListTile(
-            leading: Icon(d['name']!.contains('TV') ? Icons.tv : d['name']!.contains('Windows') ? Icons.laptop : Icons.phone_android),
+            leading: Icon(d.kind == 'tv' ? Icons.tv : d.kind == 'web' ? Icons.laptop : Icons.phone_android),
             title: Row(children: [
-              Flexible(child: Text(d['name']!, style: const TextStyle(fontWeight: FontWeight.w600))),
-              if (d['current'] != null) ...[
+              Flexible(child: Text(d.name, style: const TextStyle(fontWeight: FontWeight.w600))),
+              if (d.current) ...[
                 const SizedBox(width: 6),
                 Container(padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2), decoration: BoxDecoration(color: AppColors.brand.withValues(alpha: 0.25), borderRadius: BorderRadius.circular(4)), child: const Text('This device', style: TextStyle(fontSize: 11, color: AppColors.brandBright))),
               ],
             ]),
-            subtitle: Text('${d['location']}  •  ${fmtDate(d['last'])}', style: const TextStyle(color: AppColors.muted)),
-            trailing: d['current'] != null
+            subtitle: Text('${d.location ?? 'Nigeria'}  •  Last used ${fmtDate(d.lastSeen)}', style: const TextStyle(color: AppColors.muted)),
+            trailing: d.current
                 ? null
                 : TextButton(
-                    onPressed: () {
-                      auth.removeDevice(d['id']!);
-                      toast(context, '${d['name']} signed out.');
+                    onPressed: () async {
+                      final err = await auth.removeDevice(d.id);
+                      if (context.mounted) toast(context, err ?? '${d.name} will be signed out.');
                     },
                     child: const Text('Sign out', style: TextStyle(color: AppColors.danger)),
                   ),
@@ -540,7 +649,10 @@ class NotificationPrefsScreen extends StatelessWidget {
           activeThumbColor: AppColors.brandBright,
           title: Text(title, style: const TextStyle(fontWeight: FontWeight.w600)),
           subtitle: Text(sub, style: const TextStyle(color: AppColors.muted)),
-          onChanged: (v) => auth.updateNotifications({...n, k: v}),
+          onChanged: (v) async {
+            final err = await auth.updateNotifications({...n, k: v});
+            if (err != null && context.mounted) toast(context, err);
+          },
         );
     return Scaffold(
       appBar: AppBar(title: const Text('Notifications', style: TextStyle(fontWeight: FontWeight.w800))),
@@ -570,15 +682,18 @@ class _ProfileSettingsScreenState extends State<ProfileSettingsScreen> {
   late final Profile? _p = context.read<AuthStore>().account?.profiles.where((x) => x.id == widget.id).firstOrNull;
   late final ProfileSettings _s = ProfileSettings.fromJson(_p?.settings.toJson(), _p?.kids ?? false);
   late bool _pinOn = _s.pin != null;
-  late final _pin = TextEditingController(text: _s.pin ?? '');
+  late final _pin = TextEditingController();
+  late final bool _hadPin = _s.pin != null;
   String? _err;
 
   Future<void> _save() async {
-    if (_pinOn && !RegExp(r'^\d{4}$').hasMatch(_pin.text)) return setState(() => _err = 'Your PIN must be 4 digits.');
-    _s.pin = _pinOn ? _pin.text : null;
+    final keep = _pinOn && _hadPin && _pin.text.isEmpty;
+    if (_pinOn && !keep && !RegExp(r'^\d{4}$').hasMatch(_pin.text)) return setState(() => _err = 'Your PIN must be 4 digits.');
+    _s.pin = !_pinOn ? null : keep ? pinSet : _pin.text;
     _p!.settings = _s;
-    await context.read<AuthStore>().updateProfile(_p);
+    final err = await context.read<AuthStore>().updateProfile(_p);
     if (!mounted) return;
+    if (err != null) return setState(() => _err = err);
     toast(context, "${_p.name}'s settings saved.");
     context.pop();
   }
@@ -658,7 +773,7 @@ class _ProfileSettingsScreenState extends State<ProfileSettingsScreen> {
                 obscureText: true,
                 textAlign: TextAlign.center,
                 style: const TextStyle(fontSize: 26, letterSpacing: 16),
-                decoration: InputDecoration(hintText: '••••', errorText: _err, counterText: ''),
+                decoration: InputDecoration(hintText: '••••', helperText: _hadPin ? 'Leave blank to keep the current PIN' : 'Choose 4 digits', errorText: _err, counterText: ''),
               ),
             ),
         ]),

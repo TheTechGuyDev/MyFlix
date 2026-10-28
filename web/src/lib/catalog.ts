@@ -1,6 +1,6 @@
 /**
- * Mock catalogue used until the admin dashboard + backend supply real titles.
- * Images are Unsplash stock photos; all titles, people and stories are fictional.
+ * The catalogue: filled from Supabase at start-up (titles, episodes and Home Curation from the
+ * admin dashboard), plus the rules for rows, search and maturity limits.
  */
 
 export type Maturity = "All" | "7+" | "13+" | "16+" | "18+";
@@ -115,7 +115,7 @@ export function applyRemoteCatalog(rows: DbTitle[], episodes: DbEpisode[], cur: 
         introEnd: r.intro_end ?? undefined,
         seasonsData: seasons.map((n) => ({
           number: n,
-          episodes: eps.filter((e) => e.season === n).map((e) => ({ id: e.id, number: e.number, title: e.title, runtime: e.runtime ?? "", synopsis: e.synopsis, introStart: e.intro_start ?? undefined, introEnd: e.intro_end ?? undefined })),
+          episodes: eps.filter((e) => e.season === n).sort((a, b) => a.number - b.number).map((e) => ({ id: e.id, number: e.number, title: e.title, runtime: e.runtime ?? "", synopsis: e.synopsis, introStart: e.intro_start ?? undefined, introEnd: e.intro_end ?? undefined })),
         })),
       } as Title;
     });

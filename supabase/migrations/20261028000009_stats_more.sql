@@ -75,3 +75,15 @@ end $$;
 
 revoke execute on function public.admin_live(), public.admin_stop_stream(text) from public, anon;
 grant execute on function public.admin_live(), public.admin_stop_stream(text), public.admin_stats(integer) to authenticated;
+
+/* Billing history: hide the ₦50 card checks (they are refunded straight away). */
+create or replace function public.my_billing()
+returns jsonb language sql stable security definer set search_path = public as $$
+  select jsonb_build_object(
+    'method', (select jsonb_build_object('last4', last4, 'card_type', card_type, 'exp', exp, 'bank', bank, 'channel', channel, 'reusable', reusable)
+               from payment_methods where account_id = auth.uid()),
+    'payments', coalesce((select jsonb_agg(jsonb_build_object('id', id, 'reference', reference, 'amount', amount, 'status', status, 'plan_id', plan_id,
+                  'cycle', cycle, 'channel', channel, 'last4', last4, 'paid_at', paid_at, 'created_at', created_at) order by created_at desc)
+               from payments where account_id = auth.uid() and status in ('success', 'refunded') and kind <> 'card_update'), '[]'::jsonb)
+  );
+$$;

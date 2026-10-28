@@ -1,50 +1,46 @@
-import 'dart:math';
-import 'package:flutter/foundation.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'backend.dart';
 import 'native.dart';
-import 'shared_store.dart';
 
-/// One outgoing email, SMS or push notification.
-class OutMsg {
-  final String id, channel, kind, to, subject, body, at;
-  final String? link;
-  OutMsg({required this.id, required this.channel, required this.kind, required this.to, required this.subject, required this.body, required this.at, this.link});
-  Map<String, dynamic> toJson() => {'id': id, 'channel': channel, 'kind': kind, 'to': to, 'subject': subject, 'body': body, 'at': at, if (link != null) 'link': link};
+/// A notification from MyFlix (new releases, reminders, campaigns from the admin dashboard).
+class AppNotice {
+  final int id;
+  final String head, body, at;
+  final String? titleId, link;
+  AppNotice({required this.id, required this.head, required this.body, required this.at, this.titleId, this.link});
 }
 
-/// Sends emails/SMS/push. In the demo they go to the shared outbox (admin > Campaigns > Delivery log)
-/// and appear in an on-screen "demo inbox" so codes and reset links can be used.
-class Messages extends ChangeNotifier {
-  static final instance = Messages._();
-  Messages._();
-
-  final List<OutMsg> inbox = [];
-
-  OutMsg send({required String channel, required String kind, required String to, required String subject, required String body, String? link}) {
-    final m = OutMsg(
-      id: List.generate(8, (_) => 'abcdefghijklmnopqrstuvwxyz0123456789'[Random().nextInt(36)]).join(),
-      channel: channel,
-      kind: kind,
-      to: to,
-      subject: subject,
-      body: body,
-      link: link,
-      at: DateTime.now().toUtc().toIso8601String(),
-    );
-    final list = SharedStore.read<List>('myflix.outbox', []);
-    SharedStore.write('myflix.outbox', [m.toJson(), ...list].take(300).toList());
-    if (channel == 'push') {
-      Native.notify(subject, body);
-      if (!kIsWeb) return m;
+class Notices {
+  static Future<List<AppNotice>> fetch() async {
+    if (!backendConfigured || sb.auth.currentSession == null) return [];
+    try {
+      final r = await sb.from('notifications').select('id, head, body, title_id, link, created_at').order('created_at', ascending: false).limit(30);
+      return [
+        for (final n in List<Map<String, dynamic>>.from(r))
+          AppNotice(id: n['id'], head: n['head'], body: n['body'], at: n['created_at'], titleId: n['title_id'], link: n['link']),
+      ];
+    } catch (_) {
+      return [];
     }
-    inbox.insert(0, m);
-    if (inbox.length > 3) inbox.removeLast();
-    notifyListeners();
-    return m;
   }
 
-  void dismiss(String id) {
-    inbox.removeWhere((m) => m.id == id);
-    notifyListeners();
+  /// Shows new notifications as phone notifications (once each).
+  static Future<void> deliverNew({bool enabled = true}) async {
+    final list = await fetch();
+    if (list.isEmpty) return;
+    final prefs = await SharedPreferences.getInstance();
+    final seen = prefs.getInt('myflix.noticeSeen') ?? 0;
+    final top = list.map((n) => n.id).reduce((a, b) => a > b ? a : b);
+    if (seen == 0) {
+      await prefs.setInt('myflix.noticeSeen', top); // first run: don't replay old ones
+      return;
+    }
+    if (enabled) {
+      for (final n in list.where((n) => n.id > seen).take(2)) {
+        await Native.notify(n.head, n.body);
+      }
+    }
+    await prefs.setInt('myflix.noticeSeen', top);
   }
 }
 
@@ -58,19 +54,3 @@ String normalPhone(String input) {
 
 String prettyPhone(String p) => p.startsWith('234') && p.length == 13 ? '+234 ${p.substring(3, 6)} ${p.substring(6, 9)} ${p.substring(9)}' : p;
 bool isPhoneLike(String s) => RegExp(r'^[+\d][\d\s-]{6,}$').hasMatch(s.trim());
-
-/// Push notifications for admin campaigns this account hasn't seen yet (once per campaign).
-void deliverCampaignPush(String email, {bool enabled = true}) {
-  if (!enabled) return;
-  final campaigns = SharedStore.read<List>('myflix.admin.campaigns', []);
-  final seenKey = 'myflix.pushed.app.$email';
-  final seen = SharedStore.read<List>(seenKey, []).cast<String>().toSet();
-  final fresh = [
-    for (final c in campaigns)
-      if (c is Map && c['status'] == 'sent' && c['channel'] == 'push' && !seen.contains(c['id'])) c,
-  ];
-  for (final c in fresh.take(2)) {
-    Messages.instance.send(channel: 'push', kind: 'campaign', to: email, subject: '${c['subject']}', body: '${c['body']}');
-  }
-  if (fresh.isNotEmpty) SharedStore.write(seenKey, [...seen, ...fresh.map((c) => c['id'])]);
-}

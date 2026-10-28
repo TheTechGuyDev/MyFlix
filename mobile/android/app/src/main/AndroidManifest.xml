@@ -2,6 +2,9 @@
     <!-- Streaming, images and downloads -->
     <uses-permission android:name="android.permission.INTERNET"/>
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>
+    <!-- Finding Chromecast devices on the Wi-Fi -->
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE"/>
+    <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE"/>
     <!-- New episodes, reminders and sign-in alerts (Android 13+) -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
     <!-- Also installs on Android TV / Google TV boxes (remote-friendly layout) -->

@@ -1,29 +1,34 @@
-import 'dart:convert';
+import 'dart:async';
 import 'dart:math';
-import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
+import 'backend.dart';
 import 'catalog.dart';
 import 'messages.dart';
 import 'models.dart';
 
-/// Temporary on-device auth + account store (mirrors the web mock).
-/// Swap the internals for Supabase later; the screens only use this API.
+typedef Quote = ({bool ok, int base, int discount, int creditUsed, int freeMonths, int amount, int months, String? promoLabel, String? promoError, String? error});
+
+/// The signed-in member on Supabase: sign-up/in, codes, password reset, plans, Paystack payments,
+/// profiles, devices and privacy (export/delete). Screens listen to it with Provider.
 class AuthStore extends ChangeNotifier {
-  static const _usersKey = 'myflix.users';
-  static const _sessionKey = 'myflix.session';
   static const _profileKey = 'myflix.activeProfile';
   static const _onboardedKey = 'myflix.onboarded';
+  static const _deviceKey = 'myflix.deviceId';
+  static const _pendingPayKey = 'myflix.pendingPayment';
   static const maxProfiles = 5;
 
   late SharedPreferences _prefs;
-  Map<String, Account> _users = {};
-  String? _session;
+  Account? account;
+  List<Device> devicesList = [];
   String? activeProfileId;
   bool onboarded = false;
   bool pendingAnnual = false;
+  bool ready = false;
+  String? notice; // e.g. "signed out remotely"
+  StreamSubscription<AuthState>? _sub;
 
-  Account? get account => _session == null ? null : _users[_session];
   Profile? get activeProfile {
     final a = account;
     if (a == null) return null;
@@ -33,44 +38,136 @@ class AuthStore extends ChangeNotifier {
     return null;
   }
 
-  Future<void> init() async {
-    _prefs = await SharedPreferences.getInstance();
-    final raw = _prefs.getString(_usersKey);
-    if (raw != null) {
-      final m = jsonDecode(raw) as Map<String, dynamic>;
-      _users = m.map((k, v) => MapEntry(k, Account.fromJson(Map<String, dynamic>.from(v))));
+  /// Temporary id for something not yet saved (e.g. a new profile); the database assigns the real one.
+  static String newId() => List.generate(10, (_) => 'abcdefghijklmnopqrstuvwxyz0123456789'[Random().nextInt(36)]).join();
+
+  String get deviceId {
+    var id = _prefs.getString(_deviceKey);
+    if (id == null) {
+      id = '${kIsWeb ? 'web' : 'app'}-${List.generate(20, (_) => 'abcdefghijklmnopqrstuvwxyz0123456789'[Random.secure().nextInt(36)]).join()}';
+      _prefs.setString(_deviceKey, id);
     }
-    _session = _prefs.getString(_sessionKey);
-    activeProfileId = _prefs.getString(_profileKey);
-    onboarded = _prefs.getBool(_onboardedKey) ?? false;
+    return id;
   }
 
-  Future<void> _persist() async {
-    await _prefs.setString(_usersKey, jsonEncode(_users.map((k, v) => MapEntry(k, v.toJson()))));
-    if (_session == null) {
-      await _prefs.remove(_sessionKey);
-    } else {
-      await _prefs.setString(_sessionKey, _session!);
+  String get _deviceKind => kIsWeb ? 'web' : defaultTargetPlatform == TargetPlatform.iOS ? 'ios' : 'android';
+  String get _deviceName => kIsWeb ? 'MyFlix app (browser)' : defaultTargetPlatform == TargetPlatform.iOS ? 'MyFlix app on iPhone' : 'MyFlix app on Android';
+
+  Future<void> init() async {
+    _prefs = await SharedPreferences.getInstance();
+    activeProfileId = _prefs.getString(_profileKey);
+    onboarded = _prefs.getBool(_onboardedKey) ?? false;
+    if (!backendConfigured) {
+      ready = true;
+      return;
     }
-    if (activeProfileId == null) {
-      await _prefs.remove(_profileKey);
-    } else {
-      await _prefs.setString(_profileKey, activeProfileId!);
+    await refresh();
+    _sub = sb.auth.onAuthStateChange.listen((s) {
+      if (s.event == AuthChangeEvent.signedIn || s.event == AuthChangeEvent.signedOut || s.event == AuthChangeEvent.userUpdated) refresh();
+    });
+    ready = true;
+    notifyListeners();
+  }
+
+  @override
+  void dispose() {
+    _sub?.cancel();
+    super.dispose();
+  }
+
+  /// Reloads the account, profiles, billing and devices from the database.
+  Future<void> refresh() async {
+    final session = sb.auth.currentSession;
+    if (session == null) {
+      account = null;
+      devicesList = [];
+      notifyListeners();
+      return;
+    }
+    try {
+      final uid = session.user.id;
+      final r = await Future.wait([
+        sb.from('accounts').select().eq('id', uid).maybeSingle(),
+        sb.from('viewer_profiles').select('id, name, avatar, kids, settings, has_pin, sort').eq('account_id', uid).order('sort').order('created_at'),
+        sb.rpc('my_billing'),
+        sb.from('devices').select().eq('account_id', uid).isFilter('revoked_at', null).order('last_seen', ascending: false),
+      ]);
+      final a = r[0] as Map<String, dynamic>?;
+      if (a == null) {
+        account = null;
+        notifyListeners();
+        return;
+      }
+      final billing = Map<String, dynamic>.from((r[2] as Map?) ?? {});
+      final method = billing['method'] == null ? null : Map<String, dynamic>.from(billing['method']);
+      final me = deviceId;
+      account = Account(
+        id: a['id'],
+        email: a['email'] ?? '',
+        createdAt: a['created_at'],
+        status: a['status'],
+        billingCycle: a['billing_cycle'] ?? 'monthly',
+        planId: a['plan_id'] ?? a['pending_plan_id'],
+        pendingPlanId: a['pending_plan_id'],
+        phone: a['phone'],
+        paidUntil: a['paid_until'],
+        cancelAt: a['cancel_at'],
+        referralCode: a['referral_code'],
+        referredBy: a['referred_by'],
+        promoLabel: (a['promo'] as Map?)?['label'],
+        credit: a['credit'] ?? 0,
+        notifications: {
+          'newArrivals': true, 'reminders': true, 'recommendations': true, 'billing': true, 'offers': false, 'push': true,
+          ...Map<String, bool>.from((a['notifications'] as Map?)?.map((k, v) => MapEntry('$k', v == true)) ?? {}),
+        },
+        profiles: [for (final p in List<Map<String, dynamic>>.from(r[1] as List)) Profile.fromJson(p)],
+        billing: [
+          for (final p in List<Map<String, dynamic>>.from(billing['payments'] ?? const []))
+            BillingRecord(
+              id: p['reference'],
+              date: p['paid_at'] ?? p['created_at'],
+              planId: p['plan_id'] ?? '',
+              method: p['channel'] == 'bank_transfer' ? 'transfer' : (p['channel'] ?? 'card'),
+              amount: p['amount'] ?? 0,
+              last4: p['last4'],
+              status: p['status'] == 'refunded' ? 'Refunded' : 'Paid',
+            ),
+        ],
+        cardLast4: method?['last4'],
+        cardType: method?['card_type'],
+        cardReusable: method?['reusable'] == true,
+      );
+      devicesList = [
+        for (final d in List<Map<String, dynamic>>.from(r[3] as List))
+          Device(id: d['id'], name: d['name'], kind: d['kind'], lastSeen: d['last_seen'], location: d['location'], current: d['id'] == me),
+      ];
+      if (account!.profiles.every((p) => p.id != activeProfileId)) activeProfileId = null;
+    } catch (e) {
+      debugPrint('refresh failed: $e');
     }
     notifyListeners();
   }
 
-  Future<void> _wait([int ms = 600]) => Future.delayed(Duration(milliseconds: ms));
-  String _hash(String s) => sha256.convert(utf8.encode(s)).toString();
-  String _norm(String e) => e.trim().toLowerCase();
-  static String newId() => List.generate(8, (_) => 'abcdefghijklmnopqrstuvwxyz0123456789'[Random().nextInt(36)]).join();
+  /// Registers this device; returns false if it was signed out remotely (Account > Devices or admin).
+  Future<bool> touchDevice() async {
+    if (sb.auth.currentSession == null) return true;
+    try {
+      final ok = await sb.rpc('touch_device', params: {'p_id': deviceId, 'p_name': _deviceName, 'p_kind': _deviceKind});
+      if (ok == false) {
+        notice = 'You were signed out of this device from another device.';
+        await signOut();
+        return false;
+      }
+    } catch (_) {}
+    return true;
+  }
 
-  /// Where a signed-in user should go next to finish setup.
+  /// Where a signed-in member should go next to finish setup.
   String nextStep() {
     final a = account;
     if (a == null) return '/signup';
     if (a.planId == null) return '/signup/plan';
-    if (a.payment == null) return '/signup/payment';
+    if (!a.hasAccess) return '/signup/payment';
     if (a.profiles.isEmpty) return '/signup/profiles';
     if (activeProfile == null) return '/profiles';
     return '/home';
@@ -82,286 +179,373 @@ class AuthStore extends ChangeNotifier {
     notifyListeners();
   }
 
-  bool emailExists(String email) => _users.containsKey(_norm(email));
+  Future<String?> _guard(Future<void> Function() run) async {
+    try {
+      await run();
+      return null;
+    } catch (e) {
+      return friendly(e);
+    }
+  }
 
-  Future<String?> signUp(String email, String password) async {
-    await _wait();
-    final e = _norm(email);
-    if (_users.containsKey(e)) return 'An account with this email already exists. Sign in instead.';
-    _users[e] = Account(email: e, passwordHash: _hash(password), createdAt: DateTime.now().toIso8601String());
-    _session = e;
-    _msg.send(channel: 'email', kind: 'welcome', to: e, subject: 'Welcome to MyFlix', body: 'Your account is ready. Pick a plan to start watching Nollywood hits, series and more.');
+  String _norm(String e) => e.trim().toLowerCase();
+
+  /* ---------------- Sign up / sign in ---------------- */
+
+  /// Creates the account. Returns (error, needsCode): when needsCode, the member enters the code we emailed.
+  Future<(String?, bool)> signUp(String email, String password, {String? ref}) async {
+    try {
+      final r = await sb.auth.signUp(email: _norm(email), password: password, data: ref == null ? null : {'ref': ref}, emailRedirectTo: '$siteUrl/auth/confirm/');
+      if (r.user != null && (r.user!.identities ?? []).isEmpty) return ('An account with this email already exists. Sign in instead.', false);
+      if (r.session != null) {
+        await refresh();
+        await touchDevice();
+      }
+      return (null, r.session == null);
+    } catch (e) {
+      return (friendly(e), false);
+    }
+  }
+
+  Future<String?> verifySignupCode(String email, String code) => _guard(() async {
+        await sb.auth.verifyOTP(email: _norm(email), token: code.trim(), type: OtpType.signup);
+        await refresh();
+        await touchDevice();
+      });
+
+  Future<String?> resendSignupCode(String email) => _guard(() => sb.auth.resend(type: OtpType.signup, email: _norm(email)));
+
+  Future<String?> _afterSignIn() async {
+    await refresh();
+    if (account?.suspended == true) {
+      await signOut();
+      return 'This account has been suspended. Contact MyFlix support to restore access.';
+    }
     activeProfileId = null;
-    await _persist();
+    await _prefs.remove(_profileKey);
+    await touchDevice();
+    notifyListeners();
     return null;
   }
 
   Future<String?> signIn(String email, String password) async {
-    await _wait();
-    final a = _users[_norm(email)];
-    if (a == null) return "We can't find an account with this email address. Please try again or create a new account.";
-    if (a.passwordHash != _hash(password)) return 'Incorrect password. Please try again or reset your password.';
-    _session = a.email;
-    activeProfileId = null;
-    await _persist();
-    return null;
+    try {
+      await sb.auth.signInWithPassword(email: _norm(email), password: password);
+      return await _afterSignIn();
+    } catch (e) {
+      return friendly(e);
+    }
   }
 
   Future<void> signOut() async {
-    _session = null;
     activeProfileId = null;
-    await _persist();
+    await _prefs.remove(_profileKey);
+    try {
+      await sb.auth.signOut(scope: SignOutScope.local);
+    } catch (_) {}
+    account = null;
+    devicesList = [];
+    notifyListeners();
   }
 
-  /* ---------------- Codes, reset links, phone ---------------- */
-  final Map<String, ({String code, String email, DateTime exp, int tries})> _codes = {};
-  final Map<String, ({String email, DateTime exp})> _resets = {};
-  Messages get _msg => Messages.instance;
-
-  Account? findAccount(String identifier) {
-    if (isPhoneLike(identifier)) {
-      final p = normalPhone(identifier);
-      for (final a in _users.values) {
-        if (a.phone != null && normalPhone(a.phone!) == p) return a;
-      }
-      return null;
-    }
-    return _users[_norm(identifier)];
-  }
-
-  String _issueCode(String key, String email) {
-    final code = (100000 + Random().nextInt(900000)).toString();
-    _codes[key] = (code: code, email: email, exp: DateTime.now().add(const Duration(minutes: 10)), tries: 0);
-    return code;
-  }
-
-  String? _checkCode(String key, String code, void Function(String email) ok) {
-    final c = _codes[key];
-    if (c == null || c.exp.isBefore(DateTime.now())) return 'That code has expired. Request a new one.';
-    if (c.tries >= 5) return 'Too many attempts. Request a new code.';
-    if (c.code != code.trim()) {
-      _codes[key] = (code: c.code, email: c.email, exp: c.exp, tries: c.tries + 1);
-      return "That code isn't right. Check the message and try again.";
-    }
-    _codes.remove(key);
-    ok(c.email);
-    return null;
-  }
-
-  /// Sends a reset link by email, or by SMS when a phone number is given.
-  Future<void> requestPasswordReset(String identifier) async {
-    await _wait();
-    final a = findAccount(identifier);
-    if (a == null) return; // same response either way so accounts can't be discovered
-    final token = newId() + newId();
-    _resets[token] = (email: a.email, exp: DateTime.now().add(const Duration(hours: 1)));
-    final sms = isPhoneLike(identifier);
-    _msg.send(
-      channel: sms ? 'sms' : 'email',
-      kind: 'reset',
-      to: sms ? prettyPhone(normalPhone(identifier)) : a.email,
-      subject: sms ? 'MyFlix password reset' : 'Reset your MyFlix password',
-      body: 'Use the link below to reset your password. It works for 1 hour. If this wasn\'t you, ignore this message.',
-      link: '/reset?token=$token',
-    );
-  }
-
-  String? resetEmail(String token) {
-    final r = _resets[token];
-    return r == null || r.exp.isBefore(DateTime.now()) ? null : r.email;
-  }
-
-  Future<String?> resetPassword(String token, String password) async {
-    await _wait();
-    final email = resetEmail(token);
-    if (email == null || _users[email] == null) return 'This reset link has expired or was already used. Request a new one.';
-    _resets.remove(token);
-    _users[email]!.passwordHash = _hash(password);
-    _session = email;
-    activeProfileId = null;
-    _msg.send(channel: 'email', kind: 'security', to: email, subject: 'Your MyFlix password was changed', body: "Your password was just reset. If you didn't do this, contact help@myflix.ng right away.");
-    await _persist();
-    return null;
-  }
-
-  /// "Use a sign-in code": 6-digit code by SMS (phone) or email. Returns (error, sentTo).
+  /// "Use a sign-in code": 6-digit code by email, or by SMS to a verified phone. Returns (error, sentTo).
   Future<(String?, String?)> requestSignInCode(String identifier) async {
-    await _wait();
-    final a = findAccount(identifier);
-    final sms = isPhoneLike(identifier);
-    if (a == null) return (sms ? 'No account uses this phone number. Add your number in Account, Security first.' : "We can't find an account with this email address.", null);
-    final key = sms ? normalPhone(identifier) : a.email;
-    final code = _issueCode(key, a.email);
-    final to = sms ? prettyPhone(key) : a.email;
-    _msg.send(channel: sms ? 'sms' : 'email', kind: 'code', to: to, subject: 'Your MyFlix sign-in code', body: '$code is your MyFlix sign-in code. It expires in 10 minutes. Never share it with anyone.');
-    return (null, to);
+    try {
+      if (isPhoneLike(identifier)) {
+        final p = normalPhone(identifier);
+        if (p.isEmpty) return ('Enter a valid Nigerian phone number.', null);
+        await sb.auth.signInWithOtp(phone: '+$p', shouldCreateUser: false);
+        return (null, prettyPhone(p));
+      }
+      await sb.auth.signInWithOtp(email: _norm(identifier), shouldCreateUser: false);
+      return (null, identifier.trim());
+    } catch (e) {
+      return (friendly(e), null);
+    }
   }
 
   Future<String?> verifySignInCode(String identifier, String code) async {
-    await _wait(400);
-    final key = isPhoneLike(identifier) ? normalPhone(identifier) : _norm(identifier);
-    String? email;
-    final err = _checkCode(key, code, (e) => email = e);
-    if (err != null) return err;
-    _session = email;
-    activeProfileId = null;
-    await _persist();
-    return null;
+    try {
+      if (isPhoneLike(identifier)) {
+        await sb.auth.verifyOTP(phone: '+${normalPhone(identifier)}', token: code.trim(), type: OtpType.sms);
+      } else {
+        await sb.auth.verifyOTP(email: _norm(identifier), token: code.trim(), type: OtpType.email);
+      }
+      return await _afterSignIn();
+    } catch (e) {
+      return friendly(e);
+    }
   }
 
-  /// Step 1 of adding a phone: text a code to it. Returns (error, prettyNumber).
+  /// Sends a reset code (and link) by email, or a code by SMS for a phone number.
+  /// Same answer whether or not the account exists, so accounts can't be discovered.
+  Future<String?> requestPasswordReset(String identifier) async {
+    try {
+      if (isPhoneLike(identifier)) {
+        final p = normalPhone(identifier);
+        if (p.isEmpty) return 'Enter a valid Nigerian phone number.';
+        await sb.auth.signInWithOtp(phone: '+$p', shouldCreateUser: false);
+      } else {
+        await sb.auth.resetPasswordForEmail(_norm(identifier), redirectTo: '$siteUrl/login/reset/');
+      }
+      return null;
+    } catch (e) {
+      final m = friendly(e);
+      if (m.contains("can't find an account")) return null;
+      return m;
+    }
+  }
+
+  /// Checks the reset code; on success the member is signed in and can set a new password.
+  Future<String?> verifyResetCode(String identifier, String code) => _guard(() async {
+        if (isPhoneLike(identifier)) {
+          await sb.auth.verifyOTP(phone: '+${normalPhone(identifier)}', token: code.trim(), type: OtpType.sms);
+        } else {
+          await sb.auth.verifyOTP(email: _norm(identifier), token: code.trim(), type: OtpType.recovery);
+        }
+      });
+
+  Future<String?> resetPassword(String password) => _guard(() async {
+        await sb.auth.updateUser(UserAttributes(password: password));
+        final err = await _afterSignIn();
+        if (err != null) throw BackendError(err);
+      });
+
+  /* ---------------- Phone ---------------- */
   Future<(String?, String?)> requestPhoneCode(String phone) async {
-    await _wait(500);
-    final a = account;
     final p = normalPhone(phone);
-    if (a == null) return ('Your session has expired. Please sign in again.', null);
     if (p.isEmpty) return ('Enter a valid Nigerian phone number.', null);
-    if (_users.values.any((u) => u.email != a.email && u.phone != null && normalPhone(u.phone!) == p)) return ('Another account already uses this number.', null);
-    final code = _issueCode('verify:$p', a.email);
-    _msg.send(channel: 'sms', kind: 'code', to: prettyPhone(p), subject: 'Verify your number', body: '$code is your MyFlix verification code.');
-    return (null, prettyPhone(p));
+    try {
+      await sb.auth.updateUser(UserAttributes(phone: '+$p'));
+      return (null, prettyPhone(p));
+    } catch (e) {
+      return (friendly(e), null);
+    }
   }
 
-  Future<String?> confirmPhone(String phone, String code) async {
-    await _wait(400);
-    final p = normalPhone(phone);
-    final err = _checkCode('verify:$p', code, (_) {});
-    if (err != null) return err;
-    account?.phone = p;
-    await _persist();
-    return null;
+  Future<String?> confirmPhone(String phone, String code) => _guard(() async {
+        await sb.auth.verifyOTP(phone: '+${normalPhone(phone)}', token: code.trim(), type: OtpType.phoneChange);
+        await refresh();
+      });
+
+  /* ---------------- Plans & payments ---------------- */
+  Future<String?> choosePlan(String planId) => _guard(() async {
+        await sb.rpc('choose_plan', params: {'p_plan': planId});
+        await refresh();
+      });
+
+  Future<Quote?> quote(String planId, {required bool annual, String? promo}) async {
+    try {
+      final d = Map<String, dynamic>.from(await sb.rpc('my_quote', params: {'p_plan': planId, 'p_cycle': annual ? 'annual' : 'monthly', 'p_promo': (promo ?? '').trim().isEmpty ? null : promo!.trim().toUpperCase()}) as Map);
+      return (
+        ok: d['ok'] != false,
+        base: (d['base'] as num?)?.toInt() ?? 0,
+        discount: (d['discount'] as num?)?.toInt() ?? 0,
+        creditUsed: (d['credit_used'] as num?)?.toInt() ?? 0,
+        freeMonths: (d['free_months'] as num?)?.toInt() ?? 0,
+        amount: (d['amount'] as num?)?.toInt() ?? 0,
+        months: (d['months'] as num?)?.toInt() ?? 1,
+        promoLabel: (d['promo'] as Map?)?['label'] as String?,
+        promoError: d['promo_error'] as String?,
+        error: d['error'] as String?,
+      );
+    } catch (_) {
+      return null;
+    }
   }
 
-  Future<void> choosePlan(String planId) async {
-    await _wait(300);
-    account?.planId = planId;
-    await _persist();
+  /// Starts a Paystack checkout. Returns (error, checkoutUrl). A null URL with no error means
+  /// credit or a promo covered it and the membership is already active.
+  Future<(String?, String?)> startPayment(String planId, {required bool annual, String? promo}) async {
+    try {
+      final r = await fn('payments', {
+        'action': 'init',
+        'plan': planId,
+        'cycle': annual ? 'annual' : 'monthly',
+        'promo': (promo ?? '').trim().isEmpty ? null : promo!.trim().toUpperCase(),
+        'callback_url': '$siteUrl/paid/',
+      });
+      if (r['done'] == true) {
+        await refresh();
+        return (null, null);
+      }
+      await _prefs.setString(_pendingPayKey, '${r['reference']}');
+      return (null, r['authorization_url'] as String?);
+    } catch (e) {
+      return (friendly(e), null);
+    }
   }
 
-  Future<void> completePayment(String method, {String? last4, bool annual = false, int? amount, int freeMonths = 0, String? promoLabel}) async {
-    await _wait(1500);
-    final a = account;
-    if (a == null) return;
-    final now = DateTime.now();
-    final renews = DateTime(now.year, now.month + (annual ? 12 : 1) + freeMonths, now.day);
-    _msg.send(channel: 'email', kind: 'receipt', to: a.email, subject: 'Your MyFlix receipt', body: 'Thanks for your payment of ₦${amount ?? Catalog.plan(a.planId)?.price ?? 0}. Your membership is active.');
-    a.billingCycle = annual ? 'annual' : 'monthly';
-    a.promoLabel = promoLabel;
-    a.payment = Payment(method: method, last4: last4, paidAt: now.toIso8601String(), renewsAt: renews.toIso8601String());
-    a.billing.insert(
-      0,
-      BillingRecord(
-        id: 'INV-${now.millisecondsSinceEpoch.toString().substring(5)}',
-        date: now.toIso8601String(),
-        planId: a.planId ?? 'standard',
-        method: method,
-        last4: last4,
-        amount: amount ?? Catalog.plan(a.planId)?.price ?? 0,
-      ),
-    );
-    await _persist();
+  String? get pendingPayment => _prefs.getString(_pendingPayKey);
+
+  /// Checks the last checkout with Paystack (called when the member comes back to the app).
+  /// Returns (paid, message).
+  Future<(bool, String?)> verifyPendingPayment() async {
+    final ref = pendingPayment;
+    if (ref == null) return (account?.hasAccess == true, null);
+    try {
+      final r = await fn('payments', {'action': 'verify', 'reference': ref});
+      await refresh();
+      if (r['status'] == 'success') {
+        await _prefs.remove(_pendingPayKey);
+        return (true, null);
+      }
+      if (r['status'] == 'failed' || r['status'] == 'abandoned') await _prefs.remove(_pendingPayKey);
+      return (false, r['message'] == null ? null : 'Payment not completed: ${r['message']}');
+    } catch (e) {
+      return (false, friendly(e));
+    }
   }
 
-  Future<void> saveProfiles(List<Profile> profiles) async {
-    await _wait(400);
-    account?.profiles = profiles.take(maxProfiles).toList();
-    if (account?.profiles.any((p) => p.id == activeProfileId) != true) activeProfileId = null;
-    await _persist();
+  /// Upgrades now (charged the difference), downgrades at renewal. Returns (error, message).
+  Future<(String?, String?)> changePlan(String planId) async {
+    try {
+      final d = Map<String, dynamic>.from(await sb.rpc('change_plan', params: {'p_plan': planId}) as Map);
+      await refresh();
+      final when = d['when'];
+      return (null, when == 'renewal' ? 'Your new plan starts at your next renewal.' : when == 'payment' ? 'Complete payment to switch plans.' : 'Your plan has changed.');
+    } catch (e) {
+      return (friendly(e), null);
+    }
   }
 
-  Future<void> updateProfile(Profile p) async {
-    final a = account;
-    if (a == null) return;
-    a.profiles = a.profiles.map((x) => x.id == p.id ? p : x).toList();
-    await _persist();
+  Future<String?> cancelMembership() => _guard(() async {
+        await sb.rpc('cancel_membership');
+        await refresh();
+      });
+
+  Future<String?> restartMembership() => _guard(() async {
+        await sb.rpc('restart_membership');
+        await refresh();
+      });
+
+  /// Replaces the saved card: Paystack checks it with a ₦50 charge that is refunded straight away.
+  Future<(String?, String?)> updatePaymentMethod() async {
+    try {
+      final r = await fn('payments', {'action': 'card', 'callback_url': '$siteUrl/paid/'});
+      return (null, r['authorization_url'] as String?);
+    } catch (e) {
+      return (friendly(e), null);
+    }
+  }
+
+  Future<(String?, int?)> redeemGift(String code) async {
+    try {
+      final n = await sb.rpc('redeem_gift', params: {'p_code': code.trim().toUpperCase()});
+      await refresh();
+      return (null, (n as num?)?.toInt());
+    } catch (e) {
+      return (friendly(e), null);
+    }
+  }
+
+  /* ---------------- Profiles ---------------- */
+  Map<String, dynamic> _settingsRow(Profile p) => p.settings.toJson()..remove('pin');
+
+  Future<String?> saveProfiles(List<Profile> profiles) => _guard(() async {
+        final a = account;
+        if (a == null) throw BackendError('Please sign in again.');
+        final existing = {for (final p in a.profiles) p.id};
+        final keep = {for (final p in profiles) p.id};
+        for (final old in a.profiles) {
+          if (!keep.contains(old.id)) await sb.from('viewer_profiles').delete().eq('id', old.id);
+        }
+        var i = 0;
+        for (final p in profiles.take(maxProfiles)) {
+          final row = {'name': p.name.trim().isEmpty ? 'Profile' : p.name.trim().substring(0, min(30, p.name.trim().length)), 'avatar': p.avatar, 'kids': p.kids, 'settings': _settingsRow(p), 'sort': i++};
+          if (existing.contains(p.id)) {
+            await sb.from('viewer_profiles').update(row).eq('id', p.id);
+          } else {
+            await sb.from('viewer_profiles').insert({...row, 'account_id': a.id});
+          }
+        }
+        await refresh();
+      });
+
+  Future<String?> updateProfile(Profile p) => _guard(() async {
+        await sb.from('viewer_profiles').update({'name': p.name, 'avatar': p.avatar, 'kids': p.kids, 'settings': _settingsRow(p)}).eq('id', p.id);
+        // PIN: unchanged when it still shows the placeholder, otherwise set or cleared on the server
+        if (p.settings.pin != pinSet) await sb.rpc('set_profile_pin', params: {'pid': p.id, 'pin': p.settings.pin});
+        await refresh();
+      });
+
+  Future<bool> checkPin(String profileId, String pin) async {
+    try {
+      return await sb.rpc('check_profile_pin', params: {'pid': profileId, 'pin': pin}) == true;
+    } catch (_) {
+      return false;
+    }
   }
 
   Future<void> selectProfile(String id) async {
     activeProfileId = id;
-    await _persist();
+    await _prefs.setString(_profileKey, id);
+    notifyListeners();
   }
 
-  Future<void> save() => _persist();
-
-  /* ---------------- Account management ---------------- */
-  Future<void> changePlan(String planId) async {
-    await _wait(700);
-    account?.planId = planId;
-    await _persist();
+  Future<void> leaveProfile() async {
+    activeProfileId = null;
+    await _prefs.remove(_profileKey);
+    notifyListeners();
   }
 
-  Future<void> cancelMembership() async {
-    await _wait(700);
-    final a = account;
-    if (a == null) return;
-    a.cancelAt = a.payment?.renewsAt ?? DateTime.now().toIso8601String();
-    await _persist();
+  /* ---------------- Account settings ---------------- */
+  Future<bool> _checkPassword(String password) async {
+    final email = sb.auth.currentUser?.email;
+    if (email == null) return false;
+    try {
+      await sb.auth.signInWithPassword(email: email, password: password);
+      return true;
+    } catch (_) {
+      return false;
+    }
   }
 
-  Future<void> restartMembership() async {
-    await _wait(700);
-    account?.cancelAt = null;
-    await _persist();
-  }
-
-  Future<void> updatePaymentMethod(String method, {String? last4}) async {
-    await _wait(900);
-    final p = account?.payment;
-    if (p == null) return;
-    account!.payment = Payment(method: method, last4: last4, paidAt: p.paidAt, renewsAt: p.renewsAt);
-    await _persist();
-  }
-
+  /// Sends a confirmation to the new address; the change applies once it's confirmed.
   Future<String?> changeEmail(String newEmail, String password) async {
-    await _wait(700);
-    final a = account;
-    if (a == null) return 'Your session has expired. Please sign in again.';
-    if (a.passwordHash != _hash(password)) return 'Incorrect password.';
-    final e = _norm(newEmail);
-    if (e != a.email && _users.containsKey(e)) return 'Another account already uses this email.';
-    _users.remove(a.email);
-    a.email = e;
-    _users[e] = a;
-    _session = e;
-    await _persist();
-    return null;
+    if (!await _checkPassword(password)) return 'Incorrect password.';
+    return _guard(() => sb.auth.updateUser(UserAttributes(email: _norm(newEmail)), emailRedirectTo: '$siteUrl/auth/confirm/'));
   }
 
   Future<String?> changePassword(String current, String next) async {
-    await _wait(700);
-    final a = account;
-    if (a == null) return 'Your session has expired. Please sign in again.';
-    if (a.passwordHash != _hash(current)) return 'Your current password is incorrect.';
-    a.passwordHash = _hash(next);
-    _msg.send(channel: 'email', kind: 'security', to: a.email, subject: 'Your MyFlix password was changed', body: 'Your password was changed from Account settings. If this wasn\'t you, reset it now.');
-    await _persist();
-    return null;
+    if (!await _checkPassword(current)) return 'Your current password is incorrect.';
+    return _guard(() => sb.auth.updateUser(UserAttributes(password: next)));
   }
 
-  Future<void> updatePhone(String phone) async {
-    await _wait(400);
-    account?.phone = phone;
-    await _persist();
+  Future<String?> updateNotifications(Map<String, bool> n) => _guard(() async {
+        final a = account;
+        if (a == null) return;
+        await sb.from('accounts').update({'notifications': n}).eq('id', a.id);
+        await refresh();
+      });
+
+  List<Device> devices() => devicesList;
+
+  Future<String?> removeDevice(String id) => _guard(() async {
+        await sb.from('devices').update({'revoked_at': DateTime.now().toUtc().toIso8601String()}).eq('id', id);
+        await refresh();
+      });
+
+  Future<String?> signOutEverywhere() => _guard(() async {
+        final a = account;
+        if (a != null) await sb.from('devices').update({'revoked_at': DateTime.now().toUtc().toIso8601String()}).eq('account_id', a.id);
+        await sb.auth.signOut(scope: SignOutScope.global);
+        await signOut();
+      });
+
+  /* ---------------- Privacy ---------------- */
+  Future<(String?, Map<String, dynamic>?)> exportData() async {
+    try {
+      return (null, await fn('account', {'action': 'export'}));
+    } catch (e) {
+      return (friendly(e), null);
+    }
   }
 
-  Future<void> updateNotifications(Map<String, bool> n) async {
-    account?.notifications = n;
-    await _persist();
-  }
+  Future<String?> deleteAccount(String confirmEmail) => _guard(() async {
+        await fn('account', {'action': 'delete', 'confirm': confirmEmail.trim().toLowerCase()});
+        await signOut();
+      });
 
-  final List<Map<String, String>> _removedDevices = [];
-  List<Map<String, String>> devices() {
-    final now = DateTime.now();
-    final all = [
-      {'id': 'this', 'name': kIsWeb ? 'MyFlix web app' : 'This phone (MyFlix app)', 'location': 'Lagos, Nigeria', 'last': now.toIso8601String(), 'current': '1'},
-      {'id': 'tv', 'name': 'Samsung Smart TV', 'location': 'Lagos, Nigeria', 'last': now.subtract(const Duration(days: 1)).toIso8601String()},
-      {'id': 'web', 'name': 'Chrome on Windows', 'location': 'Ibadan, Nigeria', 'last': now.subtract(const Duration(days: 3)).toIso8601String()},
-    ];
-    return all.where((d) => !_removedDevices.any((r) => r['id'] == d['id'])).toList();
-  }
-
-  void removeDevice(String id) {
-    _removedDevices.add({'id': id});
-    notifyListeners();
-  }
+  Plan? get plan => Catalog.plan(account?.planId);
 }

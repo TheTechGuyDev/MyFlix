@@ -1,8 +1,10 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
+import 'package:url_launcher/url_launcher.dart';
 import 'package:go_router/go_router.dart';
 import 'package:provider/provider.dart';
+import 'package:flutter/gestures.dart';
 import '../../data/auth_store.dart';
+import '../../data/backend.dart';
 import '../../data/catalog.dart';
 import '../../data/models.dart';
 import '../../theme.dart';
@@ -65,10 +67,27 @@ class CreateAccountScreen extends StatefulWidget {
 class _CreateAccountScreenState extends State<CreateAccountScreen> {
   final _email = TextEditingController();
   final _pw = TextEditingController();
-  bool _agree = false, _offers = false, _loading = false;
-  String? _eErr, _pErr, _aErr, _form;
+  final _code = TextEditingController();
+  bool _agree = false, _offers = false, _loading = false, _needCode = false;
+  String? _eErr, _pErr, _aErr, _form, _info;
+
+  Future<void> _verify() async {
+    if (!RegExp(r'^\d{6}$').hasMatch(_code.text.trim())) return setState(() => _form = 'Enter the 6-digit code from the email.');
+    setState(() {
+      _loading = true;
+      _form = null;
+    });
+    final auth = context.read<AuthStore>();
+    final err = await auth.verifySignupCode(_email.text, _code.text);
+    if (!mounted) return;
+    setState(() => _loading = false);
+    if (err != null) return setState(() => _form = err);
+    if (_offers) await auth.updateNotifications({...?auth.account?.notifications, 'offers': true});
+    if (mounted) context.go('/signup/plan');
+  }
 
   Future<void> _next() async {
+    if (_needCode) return _verify();
     setState(() {
       _eErr = validateEmail(_email.text);
       _pErr = validatePassword(_pw.text);
@@ -78,19 +97,42 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
     if (_eErr != null || _pErr != null || _aErr != null) return;
     setState(() => _loading = true);
     final auth = context.read<AuthStore>();
-    final err = await auth.signUp(_email.text, _pw.text);
+    final (err, needCode) = await auth.signUp(_email.text, _pw.text);
     if (!mounted) return;
     setState(() => _loading = false);
     if (err != null) return setState(() => _form = err);
-    context.go('/signup/plan');
+    if (needCode) return setState(() => _needCode = true);
+    if (_offers) await auth.updateNotifications({...?auth.account?.notifications, 'offers': true});
+    if (mounted) context.go('/signup/plan');
   }
 
   @override
   Widget build(BuildContext context) {
     return _Shell(
       step: 1,
-      bottom: PrimaryButton('Next', onPressed: _next, loading: _loading),
-      children: [
+      bottom: PrimaryButton(_needCode ? 'Confirm' : 'Next', onPressed: _next, loading: _loading),
+      children: _needCode
+          ? [
+              const Text('Confirm your email', style: _h1),
+              const SizedBox(height: 8),
+              Text('We sent a 6-digit code to ${_email.text.trim()}. Enter it below, or tap the link in the email.', style: _p),
+              const SizedBox(height: 20),
+              if (_form != null) ...[AlertBox(_form!), const SizedBox(height: 8)],
+              if (_info != null) ...[Text(_info!, style: const TextStyle(color: AppColors.brandBright)), const SizedBox(height: 8)],
+              AppField(label: '6-digit code', controller: _code, keyboard: TextInputType.number, autofill: const [AutofillHints.oneTimeCode], onSubmitted: (_) => _verify()),
+              const SizedBox(height: 8),
+              Row(children: [
+                TextButton(
+                  onPressed: () async {
+                    final err = await context.read<AuthStore>().resendSignupCode(_email.text);
+                    if (mounted) setState(() => err == null ? _info = 'New code sent.' : _form = err);
+                  },
+                  child: const Text('Resend code', style: TextStyle(color: Colors.white)),
+                ),
+                TextButton(onPressed: () => setState(() => _needCode = false), child: const Text('Change email', style: TextStyle(color: Colors.white70))),
+              ]),
+            ]
+          : [
         const Text('Create your account', style: _h1),
         const SizedBox(height: 8),
         const Text("Just a few more steps and you're done! We hate paperwork, too.", style: _p),
@@ -109,7 +151,13 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
           onChanged: (v) => setState(() => _agree = v ?? false),
           contentPadding: EdgeInsets.zero,
           controlAffinity: ListTileControlAffinity.leading,
-          title: const Text('I agree to the Terms of Use and Privacy Statement, and confirm I am over 18.', style: TextStyle(fontSize: 14)),
+          title: Text.rich(TextSpan(style: const TextStyle(fontSize: 14), children: [
+            const TextSpan(text: 'I agree to the '),
+            TextSpan(text: 'Terms of Use', style: const TextStyle(decoration: TextDecoration.underline), recognizer: _link('terms')),
+            const TextSpan(text: ' and '),
+            TextSpan(text: 'Privacy Policy', style: const TextStyle(decoration: TextDecoration.underline), recognizer: _link('privacy')),
+            const TextSpan(text: ', and confirm I am 18 or older.'),
+          ])),
           subtitle: _aErr == null ? null : Text(_aErr!, style: const TextStyle(color: AppColors.danger)),
         ),
         CheckboxListTile(
@@ -124,6 +172,8 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
   }
 }
 
+TapGestureRecognizer _link(String page) => TapGestureRecognizer()..onTap = () => launchUrl(Uri.parse('$siteUrl/$page/'), mode: LaunchMode.externalApplication);
+
 /* ---------------- Step 2: plan ---------------- */
 class PlanScreen extends StatefulWidget {
   const PlanScreen({super.key});
@@ -132,7 +182,7 @@ class PlanScreen extends StatefulWidget {
 }
 
 class _PlanScreenState extends State<PlanScreen> {
-  late String _sel = context.read<AuthStore>().account?.planId ?? 'standard';
+  late String _sel = context.read<AuthStore>().account?.planId ?? (Catalog.plans.any((p) => p.id == 'standard') ? 'standard' : (Catalog.plans.isEmpty ? '' : Catalog.plans.first.id));
   bool _loading = false;
   bool _annual = false;
 
@@ -142,9 +192,13 @@ class _PlanScreenState extends State<PlanScreen> {
       step: 2,
       bottom: PrimaryButton('Next', loading: _loading, onPressed: () async {
         setState(() => _loading = true);
-        context.read<AuthStore>().pendingAnnual = _annual;
-        await context.read<AuthStore>().choosePlan(_sel);
-        if (context.mounted) context.go('/signup/payment');
+        final auth = context.read<AuthStore>();
+        auth.pendingAnnual = _annual;
+        final err = await auth.choosePlan(_sel);
+        if (!context.mounted) return;
+        setState(() => _loading = false);
+        if (err != null) return toast(context, err);
+        context.go('/signup/payment');
       }),
       children: [
         const Text("Choose the plan that's right for you", style: _h1),
@@ -156,7 +210,7 @@ class _PlanScreenState extends State<PlanScreen> {
           ),
         const SizedBox(height: 12),
         SegmentedButton<bool>(
-          segments: const [ButtonSegment(value: false, label: Text('Monthly')), ButtonSegment(value: true, label: Text('Yearly · save 15%'))],
+          segments: [const ButtonSegment(value: false, label: Text('Monthly')), ButtonSegment(value: true, label: Text('Yearly · save ${Catalog.plans.isEmpty ? 15 : Catalog.plans.first.annualDiscount}%'))],
           selected: {_annual},
           onSelectionChanged: (s) => setState(() => _annual = s.first),
           style: SegmentedButton.styleFrom(selectedBackgroundColor: AppColors.brand, selectedForegroundColor: Colors.white),
@@ -239,177 +293,153 @@ class _PlanCard extends StatelessWidget {
 }
 
 /* ---------------- Step 3: payment ---------------- */
+/// Payment happens on Paystack's secure page (card, bank transfer or USSD). When the member comes
+/// back to the app we confirm it with Paystack before moving on.
 class PaymentScreen extends StatefulWidget {
   const PaymentScreen({super.key});
   @override
   State<PaymentScreen> createState() => _PaymentScreenState();
 }
 
-class _PaymentScreenState extends State<PaymentScreen> {
-  String? _method;
-  bool _loading = false;
-  final _num = TextEditingController(), _exp = TextEditingController(), _cvv = TextEditingController(), _name = TextEditingController();
-  Map<String, String?> _err = {};
-  String _bank = 'GTBank';
+class _PaymentScreenState extends State<PaymentScreen> with WidgetsBindingObserver {
   final _promo = TextEditingController();
-  Promo? _applied;
-  String? _promoErr;
-  static const _banks = {'GTBank': '*737*000*', 'Access Bank': '*901*000*', 'Zenith Bank': '*966*000*', 'First Bank': '*894*000*', 'UBA': '*919*000*'};
+  String? _applied, _err;
+  Quote? _q;
+  bool _loading = false, _waiting = false, _checking = false;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    _waiting = context.read<AuthStore>().pendingPayment != null;
+    _quote();
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed && _waiting) _check();
+  }
+
+  Future<void> _quote() async {
+    final auth = context.read<AuthStore>();
+    final plan = auth.account?.planId;
+    if (plan == null) return;
+    final q = await auth.quote(plan, annual: auth.pendingAnnual, promo: _applied);
+    if (!mounted) return;
+    setState(() {
+      _q = q;
+      if (q?.promoError != null) {
+        _err = q!.promoError;
+        _applied = null;
+      }
+    });
+  }
 
   Future<void> _pay() async {
-    String? last4;
-    if (_method == 'card') {
-      final d = _num.text.replaceAll(RegExp(r'\D'), '');
-      final parts = _exp.text.split('/');
-      final mm = int.tryParse(parts.first) ?? 0;
-      final yy = parts.length > 1 ? int.tryParse(parts[1]) ?? 0 : 0;
-      final expired = mm < 1 || mm > 12 || DateTime(2000 + yy, mm + 1).isBefore(DateTime.now());
-      setState(() => _err = {
-            'num': d.length < 16 ? 'Please enter a valid card number.' : null,
-            'exp': expired ? 'Please enter a valid expiry date.' : null,
-            'cvv': RegExp(r'^\d{3,4}$').hasMatch(_cvv.text) ? null : 'Please enter a valid CVV.',
-            'name': _name.text.trim().isEmpty ? 'Please enter the name on the card.' : null,
-          });
-      if (_err.values.any((e) => e != null)) return;
-      last4 = d.substring(d.length - 4);
-    }
-    setState(() => _loading = true);
     final auth = context.read<AuthStore>();
-    final plan = Catalog.plan(auth.account?.planId);
-    final full = plan == null ? 0 : (auth.pendingAnnual ? annualPrice(plan) : plan.price);
-    await auth.completePayment(_method!,
-        last4: last4, annual: auth.pendingAnnual, amount: _applied?.apply(full) ?? full, freeMonths: _applied?.freeMonths ?? 0, promoLabel: _applied?.label);
-    if (mounted) context.go('/signup/profiles');
+    setState(() {
+      _loading = true;
+      _err = null;
+    });
+    final (err, url) = await auth.startPayment(auth.account!.planId!, annual: auth.pendingAnnual, promo: _applied);
+    if (!mounted) return;
+    setState(() => _loading = false);
+    if (err != null) return setState(() => _err = err);
+    if (url == null) {
+      // Covered by credit or a promo
+      if (mounted) context.go(auth.nextStep());
+      return;
+    }
+    setState(() => _waiting = true);
+    await launchUrl(Uri.parse(url), mode: LaunchMode.externalApplication);
+  }
+
+  Future<void> _check() async {
+    if (_checking) return;
+    setState(() {
+      _checking = true;
+      _err = null;
+    });
+    final auth = context.read<AuthStore>();
+    final (paid, msg) = await auth.verifyPendingPayment();
+    if (!mounted) return;
+    setState(() => _checking = false);
+    if (paid) {
+      context.go(auth.nextStep());
+    } else {
+      setState(() {
+        _err = msg ?? "We haven't received your payment yet. If you paid by bank transfer it can take a few minutes.";
+        _waiting = auth.pendingPayment != null;
+      });
+    }
   }
 
   @override
   Widget build(BuildContext context) {
     final auth = context.watch<AuthStore>();
     final plan = Catalog.plan(auth.account?.planId);
-    final full = plan == null ? 0 : (auth.pendingAnnual ? annualPrice(plan) : plan.price);
-    final price = _applied?.apply(full) ?? full;
+    final q = _q;
+    final cycle = auth.pendingAnnual ? 'year' : 'month';
     return _Shell(
       step: 3,
-      bottom: _method == null
-          ? null
-          : PrimaryButton(_method == 'card' ? 'Start Membership' : _method == 'transfer' ? "I've sent the money" : "I've completed payment", onPressed: _pay, loading: _loading),
+      bottom: _waiting
+          ? Column(mainAxisSize: MainAxisSize.min, children: [
+              PrimaryButton("I've paid, continue", onPressed: _check, loading: _checking),
+              TextButton(onPressed: _pay, child: const Text('Open payment page again', style: TextStyle(color: Colors.white70))),
+            ])
+          : PrimaryButton(q == null ? 'Loading price…' : 'Pay ${naira(q.amount)} with Paystack', onPressed: q == null ? null : _pay, loading: _loading),
       children: [
-        Text(_method == null ? 'Choose how to pay' : _method == 'card' ? 'Debit or credit card' : _method == 'transfer' ? 'Bank transfer' : 'USSD', style: _h1),
+        Text(_waiting ? 'Finish paying on Paystack' : 'Set up your payment', style: _h1),
         const SizedBox(height: 14),
+        if (_err != null) ...[AlertBox(_err!), const SizedBox(height: 12)],
         Container(
           padding: const EdgeInsets.all(14),
           decoration: BoxDecoration(color: AppColors.ink2, borderRadius: BorderRadius.circular(10)),
           child: Row(children: [
             Expanded(
               child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                Text('${naira(price)} today, then ${auth.pendingAnnual ? 'yearly' : 'monthly'}', style: const TextStyle(fontWeight: FontWeight.w700)),
-                Text('${plan?.name ?? ''} plan${_applied != null ? ' · ${_applied!.label}' : ''}', style: const TextStyle(color: AppColors.muted, fontSize: 13)),
+                Text(q == null ? '…' : '${naira(q.amount)} today${q.freeMonths > 0 ? ' + ${q.freeMonths} free month${q.freeMonths > 1 ? 's' : ''}' : ''}', style: const TextStyle(fontWeight: FontWeight.w700)),
+                Text('${plan?.name ?? ''} plan, renews every $cycle at ${naira(q?.base ?? plan?.price ?? 0)}${q?.promoLabel != null ? ' · ${q!.promoLabel}' : ''}', style: const TextStyle(color: AppColors.muted, fontSize: 13)),
+                if ((q?.creditUsed ?? 0) > 0) Text('Credit used: ${naira(q!.creditUsed)}', style: const TextStyle(color: AppColors.brandBright, fontSize: 13)),
               ]),
             ),
-            TextButton(onPressed: () => context.go('/signup/plan'), child: const Text('Change', style: TextStyle(color: AppColors.brandBright, fontWeight: FontWeight.w700))),
+            if (!_waiting) TextButton(onPressed: () => context.go('/signup/plan'), child: const Text('Change', style: TextStyle(color: AppColors.brandBright, fontWeight: FontWeight.w700))),
           ]),
         ),
-        const SizedBox(height: 12),
-        Row(children: [
-          Expanded(child: TextField(controller: _promo, textCapitalization: TextCapitalization.characters, decoration: InputDecoration(hintText: 'Promo code', errorText: _promoErr, contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12)))),
-          const SizedBox(width: 8),
-          OutlinedButton(
-            onPressed: () {
-              final (p, e) = Promo.check(_promo.text, plan?.id ?? '');
-              setState(() {
-                _applied = p;
-                _promoErr = e;
-              });
-            },
-            style: OutlinedButton.styleFrom(minimumSize: const Size(80, 50), side: const BorderSide(color: Colors.white54)),
-            child: const Text('Apply', style: TextStyle(color: Colors.white)),
-          ),
-        ]),
-        if (_applied != null) Padding(padding: const EdgeInsets.only(top: 6), child: Text('Code ${_applied!.code} applied: ${_applied!.label}', style: const TextStyle(color: AppColors.brandBright, fontWeight: FontWeight.w600))),
-        const SizedBox(height: 16),
-        if (_method == null) ...[
-          const Text('Your payment is encrypted and you can change how you pay anytime.', style: _p),
-          const SizedBox(height: 8),
-          const Row(children: [Icon(Icons.lock, size: 16, color: AppColors.muted), SizedBox(width: 6), Text('Secured by Paystack', style: TextStyle(color: AppColors.muted, fontSize: 13))]),
-          const SizedBox(height: 14),
-          for (final m in const [('card', 'Debit or credit card', 'Verve, Mastercard, Visa', Icons.credit_card), ('transfer', 'Bank transfer', 'Pay from any Nigerian bank app', Icons.account_balance), ('ussd', 'USSD', 'No internet banking needed', Icons.dialpad)])
-            Padding(
-              padding: const EdgeInsets.only(bottom: 10),
-              child: ListTile(
-                onTap: () => setState(() => _method = m.$1),
-                shape: RoundedRectangleBorder(side: const BorderSide(color: AppColors.line), borderRadius: BorderRadius.circular(10)),
-                leading: Icon(m.$4),
-                title: Text(m.$2, style: const TextStyle(fontWeight: FontWeight.w700)),
-                subtitle: Text(m.$3, style: const TextStyle(color: AppColors.muted)),
-                trailing: const Icon(Icons.chevron_right),
-              ),
-            ),
-        ],
-        if (_method == 'card') ...[
-          AppField(label: 'Card number', controller: _num, errorText: _err['num'], keyboard: TextInputType.number, autofill: const [AutofillHints.creditCardNumber], onChanged: (v) {
-            final d = v.replaceAll(RegExp(r'\D'), '');
-            final f = d.substring(0, d.length.clamp(0, 19)).replaceAllMapped(RegExp(r'.{4}'), (m) => '${m[0]} ').trim();
-            if (f != v) _num.value = TextEditingValue(text: f, selection: TextSelection.collapsed(offset: f.length));
-          }),
+        if (!_waiting) ...[
           const SizedBox(height: 12),
           Row(children: [
-            Expanded(child: AppField(label: 'Expiry (MM/YY)', controller: _exp, errorText: _err['exp'], keyboard: TextInputType.number, onChanged: (v) {
-              final d = v.replaceAll(RegExp(r'\D'), '');
-              final c = d.substring(0, d.length.clamp(0, 4));
-              final f = c.length > 2 ? '${c.substring(0, 2)}/${c.substring(2)}' : c;
-              if (f != v) _exp.value = TextEditingValue(text: f, selection: TextSelection.collapsed(offset: f.length));
-            })),
-            const SizedBox(width: 12),
-            Expanded(child: AppField(label: 'CVV', controller: _cvv, errorText: _err['cvv'], keyboard: TextInputType.number, password: true)),
-          ]),
-          const SizedBox(height: 12),
-          AppField(label: 'Name on card', controller: _name, errorText: _err['name'], autofill: const [AutofillHints.creditCardName]),
-        ],
-        if (_method == 'transfer') ...[
-          const Text('Transfer the exact amount to this account. It expires in 30 minutes.', style: _p),
-          const SizedBox(height: 12),
-          for (final r in [('Bank', 'Wema Bank (Demo)', false), ('Account number', '0123456789', true), ('Account name', 'MyFlix Checkout', false), ('Amount', naira(price), true)])
-            ListTile(
-              dense: true,
-              contentPadding: EdgeInsets.zero,
-              title: Text(r.$1, style: const TextStyle(color: AppColors.muted)),
-              trailing: Row(mainAxisSize: MainAxisSize.min, children: [
-                Text(r.$2, style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 15)),
-                if (r.$3)
-                  IconButton(
-                    icon: const Icon(Icons.copy, size: 18, color: AppColors.brandBright),
-                    onPressed: () {
-                      Clipboard.setData(ClipboardData(text: r.$2));
-                      toast(context, 'Copied');
-                    },
-                  ),
-              ]),
+            Expanded(child: TextField(controller: _promo, textCapitalization: TextCapitalization.characters, decoration: const InputDecoration(hintText: 'Promo code', contentPadding: EdgeInsets.symmetric(horizontal: 14, vertical: 12)))),
+            const SizedBox(width: 8),
+            OutlinedButton(
+              onPressed: () {
+                setState(() {
+                  _applied = _promo.text.trim().isEmpty ? null : _promo.text.trim().toUpperCase();
+                  _err = null;
+                });
+                _quote();
+              },
+              style: OutlinedButton.styleFrom(minimumSize: const Size(80, 50), side: const BorderSide(color: Colors.white54)),
+              child: const Text('Apply', style: TextStyle(color: Colors.white)),
             ),
-        ],
-        if (_method == 'ussd') ...[
-          DropdownButtonFormField<String>(
-            initialValue: _bank,
-            decoration: const InputDecoration(labelText: 'Select your bank'),
-            items: [for (final b in _banks.keys) DropdownMenuItem(value: b, child: Text(b))],
-            onChanged: (v) => setState(() => _bank = v!),
-          ),
+          ]),
+          if (_applied != null && q?.promoLabel != null) Padding(padding: const EdgeInsets.only(top: 6), child: Text('Code $_applied applied: ${q!.promoLabel}', style: const TextStyle(color: AppColors.brandBright, fontWeight: FontWeight.w600))),
+          const SizedBox(height: 18),
+          const Text('Pay with your debit card, a bank transfer or USSD on Paystack\'s secure page. Card payments renew automatically; you can cancel anytime.', style: _p),
+        ] else ...[
           const SizedBox(height: 16),
-          Container(
-            padding: const EdgeInsets.all(20),
-            decoration: BoxDecoration(color: AppColors.ink2, borderRadius: BorderRadius.circular(10)),
-            child: Column(children: [
-              const Text('Dial this code on the phone linked to your account', textAlign: TextAlign.center, style: TextStyle(color: AppColors.muted)),
-              const SizedBox(height: 8),
-              SelectableText('${_banks[_bank]}$price#', style: const TextStyle(fontSize: 28, fontWeight: FontWeight.w800, letterSpacing: 1)),
-            ]),
-          ),
+          const Text("Complete the payment in your browser, then come back here. We'll confirm it automatically.", style: _p),
         ],
-        if (_method != null) ...[
-          const SizedBox(height: 16),
-          Text('By continuing, you agree that your membership renews monthly at ${naira(price)} until you cancel.', style: const TextStyle(color: AppColors.muted, fontSize: 13)),
-          TextButton(onPressed: () => setState(() => _method = null), child: const Text('← Choose a different payment method', style: TextStyle(color: Colors.white70))),
-          const Text('Demo mode: no real charge is made.', style: TextStyle(color: AppColors.muted, fontSize: 12)),
-        ],
+        const SizedBox(height: 10),
+        const Row(children: [Icon(Icons.lock, size: 16, color: AppColors.muted), SizedBox(width: 6), Text('Secured by Paystack. MyFlix never sees your card number.', style: TextStyle(color: AppColors.muted, fontSize: 13))]),
+        const SizedBox(height: 12),
+        Text('By paying, you agree that your membership renews every $cycle at ${naira(q?.base ?? plan?.price ?? 0)} until you cancel.', style: const TextStyle(color: AppColors.muted, fontSize: 13)),
       ],
     );
   }
@@ -438,11 +468,15 @@ class _ProfileSetupScreenState extends State<ProfileSetupScreen> {
       _loading = true;
     });
     final auth = context.read<AuthStore>();
-    await auth.saveProfiles([
+    final err = await auth.saveProfiles([
+      ...?auth.account?.profiles,
       for (var j = 0; j < filled.length; j++)
-        Profile(id: AuthStore.newId(), name: _names[filled[j]].text.trim(), avatar: j, kids: _kids[filled[j]]),
+        Profile(id: 'new-${AuthStore.newId()}', name: _names[filled[j]].text.trim(), avatar: j, kids: _kids[filled[j]]),
     ]);
-    if (mounted) context.go('/profiles');
+    if (!mounted) return;
+    setState(() => _loading = false);
+    if (err != null) return setState(() => _err = err);
+    context.go('/profiles');
   }
 
   @override

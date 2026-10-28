@@ -106,7 +106,7 @@ class _HomeScreenState extends State<HomeScreen> {
             controller: _scroll,
             padding: EdgeInsets.zero,
             children: [
-              _Hero(t: hero, topPadding: MediaQuery.of(context).padding.top + 108),
+              if (hero != null) _Hero(t: hero, topPadding: MediaQuery.of(context).padding.top + 108) else _EmptyCatalog(topPadding: MediaQuery.of(context).padding.top + 120),
               if (cont.isNotEmpty) RowSection(title: 'Continue Watching for ${p.name}', height: 228, children: [for (final t in cont) ContinueCard(t)]),
               for (var i = 0; i < rows.length; i++) ...[
                 if (i == 1 && myList.isNotEmpty && _filter == 'all') RowSection(title: 'My List', onTitleTap: () => context.push('/mylist'), children: [for (final t in myList) PosterCard(t)]),
@@ -343,4 +343,22 @@ class CategoryScreen extends StatelessWidget {
             ),
     );
   }
+}
+
+
+/// Shown before any titles are published (or when none suit this profile).
+class _EmptyCatalog extends StatelessWidget {
+  final double topPadding;
+  const _EmptyCatalog({required this.topPadding});
+  @override
+  Widget build(BuildContext context) => Padding(
+        padding: EdgeInsets.fromLTRB(28, topPadding, 28, 40),
+        child: const Column(children: [
+          Icon(Icons.movie_filter_outlined, size: 56, color: AppColors.muted),
+          SizedBox(height: 14),
+          Text('New titles are on the way', textAlign: TextAlign.center, style: TextStyle(fontSize: 20, fontWeight: FontWeight.w800)),
+          SizedBox(height: 8),
+          Text("We're adding Nollywood films and series. Check back soon, or turn on notifications so we can tell you.", textAlign: TextAlign.center, style: TextStyle(color: AppColors.muted, height: 1.4)),
+        ]),
+      );
 }

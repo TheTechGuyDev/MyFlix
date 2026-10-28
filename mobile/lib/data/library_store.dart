@@ -6,7 +6,7 @@ import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'catalog.dart';
+import 'backend.dart';
 import 'protect.dart';
 
 class Progress {
@@ -60,7 +60,9 @@ class DownloadItem {
       };
 }
 
-/// Per-profile library: My List, ratings, progress, reminders and downloads.
+/// Per-profile library. My List, ratings, progress, reminders, viewing activity and the data meter
+/// are kept in Supabase (shared with the website and other devices). Downloads and recent searches
+/// stay on this device.
 class LibraryStore extends ChangeNotifier {
   late SharedPreferences _prefs;
   String? _profile;
@@ -90,12 +92,14 @@ class LibraryStore extends ChangeNotifier {
 
   String get _key => 'myflix.lib.$_profile';
 
+  /// Switches to a profile and loads its library from the server (device-only items from storage).
   void loadProfile(String? profileId, {required bool kids}) {
     if (profileId == _profile) return;
     for (final s in _active.values) {
       s.cancel();
     }
     _active.clear();
+    _flushUsage();
     _profile = profileId;
     list = [];
     ratings = {};
@@ -110,43 +114,54 @@ class LibraryStore extends ChangeNotifier {
     final raw = _prefs.getString(_key);
     if (raw != null) {
       final j = jsonDecode(raw) as Map<String, dynamic>;
-      list = List<String>.from(j['list'] ?? []);
-      ratings = Map<String, int>.from(j['ratings'] ?? {});
-      progress = (j['progress'] as Map? ?? {}).map((k, v) => MapEntry(k as String, Progress.fromJson(Map<String, dynamic>.from(v))));
-      reminders = Set<String>.from(j['reminders'] ?? []);
       recentSearches = List<String>.from(j['recent'] ?? []);
       downloads = (j['downloads'] as Map? ?? {}).map((k, v) => MapEntry(k as String, DownloadItem.fromJson(Map<String, dynamic>.from(v))));
-      usage = (j['usage'] as Map? ?? {}).map((k, v) => MapEntry(k as String, (v as Map).map((a, b) => MapEntry(a as String, (b as num).toDouble()))));
-      today = (j['today'] as Map? ?? {}).map((k, v) => MapEntry(k as String, (v as num).toDouble()));
-      activity = ((j['activity'] as List?) ?? []).map((e) => Map<String, dynamic>.from(e)).toList();
-    } else {
-      // Fresh profile: give Continue Watching something to show (demo)
-      final now = DateTime.now().toIso8601String();
-      final seed = kids ? ['compound-kids', 'market-day'] : ['no-witness', 'chairmans-son', 'danfo-diaries'];
-      for (var i = 0; i < seed.length; i++) {
-        progress[seed[i]] = Progress(pct: [35.0, 62.0, 18.0][i % 3], season: 1, episode: i + 2, updatedAt: now);
-      }
-      _save();
     }
     notifyListeners();
+    _loadRemote(profileId);
+  }
+
+  Future<void> reload() async {
+    if (_profile != null) await _loadRemote(_profile!);
+  }
+
+  Future<void> _loadRemote(String pid) async {
+    if (!backendConfigured) return;
+    try {
+      final first = DateTime(DateTime.now().year, DateTime.now().month, 1);
+      final r = await Future.wait([
+        sb.from('my_list').select('title_id').eq('profile_id', pid).order('added_at', ascending: false),
+        sb.from('ratings').select('title_id, rating').eq('profile_id', pid),
+        sb.from('progress').select().eq('profile_id', pid),
+        sb.from('reminders').select('title_id').eq('profile_id', pid),
+        sb.from('activity').select('id, title_id, season, episode, watched_at').eq('profile_id', pid).eq('hidden', false).order('watched_at', ascending: false).limit(300),
+        sb.from('usage_daily').select('day, seconds, gb').eq('profile_id', pid).gte('day', first.toIso8601String().substring(0, 10)),
+      ]);
+      if (_profile != pid) return;
+      list = [for (final x in r[0] as List) '${x['title_id']}'];
+      ratings = {for (final x in r[1] as List) '${x['title_id']}': (x['rating'] as num).toInt()};
+      progress = {
+        for (final x in r[2] as List)
+          '${x['title_id']}': Progress(pct: (x['pct'] as num).toDouble(), time: (x['position'] as num?)?.toDouble() ?? 0, season: x['season'] ?? 1, episode: x['episode'] ?? 1, updatedAt: x['updated_at'] ?? ''),
+      };
+      reminders = {for (final x in r[3] as List) '${x['title_id']}'};
+      activity = [for (final x in r[4] as List) {'id': x['id'], 'titleId': x['title_id'], 'season': x['season'], 'episode': x['episode'], 'at': x['watched_at']}];
+      var secs = 0.0, gb = 0.0;
+      for (final x in r[5] as List) {
+        secs += (x['seconds'] as num).toDouble();
+        gb += (x['gb'] as num).toDouble();
+        if (x['day'] == _day()) today = {_day(): (x['seconds'] as num).toDouble()};
+      }
+      usage = {_month(): {'seconds': secs, 'gb': gb}};
+      notifyListeners();
+    } catch (e) {
+      debugPrint('library load failed: $e');
+    }
   }
 
   void _save() {
     if (_profile == null) return;
-    _prefs.setString(
-      _key,
-      jsonEncode({
-        'list': list,
-        'ratings': ratings,
-        'progress': progress.map((k, v) => MapEntry(k, v.toJson())),
-        'reminders': reminders.toList(),
-        'recent': recentSearches,
-        'downloads': downloads.map((k, v) => MapEntry(k, v.toJson())),
-        'usage': usage,
-        'today': today,
-        'activity': activity,
-      }),
-    );
+    _prefs.setString(_key, jsonEncode({'recent': recentSearches, 'downloads': downloads.map((k, v) => MapEntry(k, v.toJson()))}));
   }
 
   void _changed() {
@@ -154,19 +169,49 @@ class LibraryStore extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// Fire-and-forget write; the screen already shows the change.
+  void _remote(Future<dynamic> Function() run) {
+    if (_profile == null || !backendConfigured) return;
+    run().catchError((Object e) {
+      debugPrint('library write failed: $e');
+      return null;
+    });
+  }
+
   bool inList(String id) => list.contains(id);
   void toggleList(String id) {
-    list.contains(id) ? list.remove(id) : list.insert(0, id);
+    final pid = _profile;
+    if (list.contains(id)) {
+      list.remove(id);
+      _remote(() => sb.from('my_list').delete().eq('profile_id', pid!).eq('title_id', id));
+    } else {
+      list.insert(0, id);
+      _remote(() => sb.from('my_list').upsert({'profile_id': pid, 'title_id': id}));
+    }
     _changed();
   }
 
   void rate(String id, int r) {
-    ratings[id] == r ? ratings.remove(id) : ratings[id] = r;
+    final pid = _profile;
+    if (ratings[id] == r) {
+      ratings.remove(id);
+      _remote(() => sb.from('ratings').delete().eq('profile_id', pid!).eq('title_id', id));
+    } else {
+      ratings[id] = r;
+      _remote(() => sb.from('ratings').upsert({'profile_id': pid, 'title_id': id, 'rating': r, 'rated_at': DateTime.now().toUtc().toIso8601String()}));
+    }
     _changed();
   }
 
   void toggleReminder(String id) {
-    reminders.contains(id) ? reminders.remove(id) : reminders.add(id);
+    final pid = _profile;
+    if (reminders.contains(id)) {
+      reminders.remove(id);
+      _remote(() => sb.from('reminders').delete().eq('profile_id', pid!).eq('title_id', id));
+    } else {
+      reminders.add(id);
+      _remote(() => sb.from('reminders').upsert({'profile_id': pid, 'title_id': id}));
+    }
     _changed();
   }
 
@@ -188,23 +233,32 @@ class LibraryStore extends ChangeNotifier {
   void saveProgress(String titleId, {required double time, required double duration, required int season, required int episode, ({int season, int episode})? next}) {
     if (duration <= 0) return;
     final pct = time / duration * 100;
-    final now = DateTime.now().toIso8601String();
+    final now = DateTime.now().toUtc().toIso8601String();
+    final pid = _profile;
+    Progress? p;
     if (pct >= 95) {
       if (next != null) {
-        progress[titleId] = Progress(pct: 0, time: 0, season: next.season, episode: next.episode, updatedAt: now);
+        p = Progress(pct: 0, time: 0, season: next.season, episode: next.episode, updatedAt: now);
       } else {
         progress.remove(titleId);
+        _remote(() => sb.from('progress').delete().eq('profile_id', pid!).eq('title_id', titleId));
+        _changed();
+        return;
       }
     } else if (time > 10) {
-      progress[titleId] = Progress(pct: pct, time: time, season: season, episode: episode, updatedAt: now);
+      p = Progress(pct: pct, time: time, season: season, episode: episode, updatedAt: now);
     } else {
       return;
     }
+    progress[titleId] = p;
+    _remote(() => sb.from('progress').upsert({'profile_id': pid, 'title_id': titleId, 'season': p!.season, 'episode': p.episode, 'position': p.time, 'duration': duration, 'pct': p.pct.round(), 'updated_at': now}));
     _changed();
   }
 
   void removeProgress(String id) {
+    final pid = _profile;
     progress.remove(id);
+    _remote(() => sb.from('progress').delete().eq('profile_id', pid!).eq('title_id', id));
     _changed();
   }
 
@@ -219,36 +273,60 @@ class LibraryStore extends ChangeNotifier {
   /// GB per hour by quality: Save Data ~0.3, SD ~0.7, HD ~3, 4K ~7.
   static double gbPerHour(String dataUsage) => switch (dataUsage) { 'saver' => 0.3, 'hd' => 3.0, '4k' => 7.0, _ => 1.2 };
 
-  int _pendingSave = 0;
+  double _unsentSeconds = 0, _unsentGb = 0;
   void addUsage(double seconds, String dataUsage) {
     if (seconds <= 0 || seconds > 30) return;
+    final gb = gbPerHour(dataUsage) * seconds / 3600;
     final m = usage[_month()] ?? {'seconds': 0, 'gb': 0};
-    usage[_month()] = {'seconds': (m['seconds'] ?? 0) + seconds, 'gb': (m['gb'] ?? 0) + gbPerHour(dataUsage) * seconds / 3600};
+    usage[_month()] = {'seconds': (m['seconds'] ?? 0) + seconds, 'gb': (m['gb'] ?? 0) + gb};
     today = {_day(): (today[_day()] ?? 0) + seconds};
-    if (++_pendingSave >= 10) {
-      _pendingSave = 0;
-      _save();
-    }
+    _unsentSeconds += seconds;
+    _unsentGb += gb;
+    if (_unsentSeconds >= 60) _flushUsage();
   }
+
+  /// Sends watch time to the server (screen-time limits and the data meter work across devices).
+  void _flushUsage() {
+    if (_unsentSeconds < 1 || _profile == null) return;
+    final pid = _profile, s = _unsentSeconds.round(), g = double.parse(_unsentGb.toStringAsFixed(3));
+    _unsentSeconds = 0;
+    _unsentGb = 0;
+    _remote(() => sb.rpc('add_usage', params: {'p_profile': pid, 'p_seconds': s, 'p_gb': g}));
+  }
+
+  void flushUsage() => _flushUsage();
 
   double get monthGb => usage[_month()]?['gb'] ?? 0;
   double get monthHours => (usage[_month()]?['seconds'] ?? 0) / 3600;
   int get todayMinutes => ((today[_day()] ?? 0) / 60).floor();
 
   void logActivity(String titleId, {int? season, int? episode}) {
+    final pid = _profile;
     activity.removeWhere((a) => a['titleId'] == titleId && a['season'] == season && a['episode'] == episode);
-    activity.insert(0, {'titleId': titleId, 'season': season, 'episode': episode, 'at': DateTime.now().toIso8601String()});
+    activity.insert(0, {'titleId': titleId, 'season': season, 'episode': episode, 'at': DateTime.now().toUtc().toIso8601String()});
     if (activity.length > 300) activity = activity.sublist(0, 300);
+    _remote(() => sb.from('activity').insert({'profile_id': pid, 'title_id': titleId, 'season': season, 'episode': episode}));
     _changed();
   }
 
   void hideActivity(String at) {
+    final pid = _profile;
+    final item = activity.where((a) => a['at'] == at).firstOrNull;
     activity.removeWhere((a) => a['at'] == at);
+    if (item != null) {
+      _remote(() {
+        var q = sb.from('activity').update({'hidden': true}).eq('profile_id', pid!).eq('title_id', item['titleId']);
+        if (item['season'] != null) q = q.eq('season', item['season']).eq('episode', item['episode']);
+        return q;
+      });
+    }
     _changed();
   }
 
   void clearActivity() {
+    final pid = _profile;
     activity = [];
+    _remote(() => sb.from('activity').update({'hidden': true}).eq('profile_id', pid!));
     _changed();
   }
 
@@ -279,7 +357,7 @@ class LibraryStore extends ChangeNotifier {
   int get downloadedBytes => downloads.values.where((d) => d.state == DlState.done).fold(0, (a, d) => a + d.bytes);
 
   /// Starts a download. Returns an error message if it can't start.
-  Future<String?> startDownload(String titleId, {int? season, int? episode, int maxDownloads = 6}) async {
+  Future<String?> startDownload(String titleId, {int? season, int? episode, int maxDownloads = 6, required String deviceName}) async {
     if (kIsWeb) return 'Downloads are available in the MyFlix app for Android and iOS.';
     final key = dlKey(titleId, season, episode);
     final distinctTitles = downloads.values.map((d) => d.titleId).toSet();
@@ -292,6 +370,17 @@ class LibraryStore extends ChangeNotifier {
         return 'Downloads are set to Wi-Fi only. Connect to Wi-Fi or change this in App Settings.';
       }
     }
+    // Ask the server for a download link (checks the membership; only titles prepared for download have one)
+    String url;
+    try {
+      final r = await fn('playback', {'title_id': titleId, 'season': season ?? 1, 'episode': episode ?? 1, 'stream_id': 'dl-${DateTime.now().millisecondsSinceEpoch}', 'profile_id': _profile, 'device': deviceName, 'download': true});
+      if (r['ok'] == false) return r['reason'] == 'membership' ? 'Your membership has ended. Renew to download.' : r['reason'] == 'plan' ? "Your plan doesn't include downloads." : "This title can't be downloaded right now.";
+      final link = r['download'] ?? (r['sample'] == true ? (r['sources'] as List?)?.first : null);
+      if (link == null) return "This title isn't available for download yet.";
+      url = '$link';
+    } catch (e) {
+      return friendly(e);
+    }
     final item = downloads[key] ?? DownloadItem(key: key, titleId: titleId, season: season, episode: episode);
     item
       ..state = DlState.downloading
@@ -299,11 +388,11 @@ class LibraryStore extends ChangeNotifier {
       ..error = null;
     downloads[key] = item;
     _changed();
-    _run(item);
+    _run(item, url);
     return null;
   }
 
-  Future<void> _run(DownloadItem item) async {
+  Future<void> _run(DownloadItem item, String url) async {
     try {
       final dir = await getApplicationDocumentsDirectory();
       final folder = Directory('${dir.path}/downloads');
@@ -311,7 +400,7 @@ class LibraryStore extends ChangeNotifier {
       // Stored encrypted (.mfx) so the file can't be copied off the phone and played elsewhere
       final file = File('${folder.path}/${_profile}_${item.key.replaceAll('|', '_')}.mfx');
       final enc = await Protect.cipher();
-      final req = http.Request('GET', Uri.parse(Catalog.demoMp4));
+      final req = http.Request('GET', Uri.parse(url));
       final res = await http.Client().send(req);
       if (res.statusCode != 200) throw Exception('HTTP ${res.statusCode}');
       final total = res.contentLength ?? 0;

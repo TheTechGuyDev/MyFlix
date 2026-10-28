@@ -5,6 +5,7 @@ import 'package:provider/provider.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:url_launcher/url_launcher.dart';
 import '../../data/auth_store.dart';
+import '../../data/backend.dart';
 import '../../data/catalog.dart';
 import '../../data/library_store.dart';
 import '../../data/tv_link.dart';
@@ -12,7 +13,7 @@ import '../../theme.dart';
 import '../../widgets/common.dart';
 import 'account.dart' show fmtDate;
 
-const _site = 'https://thetechguydev.github.io/MyFlix';
+const _site = siteUrl;
 
 /* ======================= Viewing activity ======================= */
 class ActivityScreen extends StatefulWidget {
@@ -133,18 +134,10 @@ class DataUsageCard extends StatelessWidget {
 class InviteScreen extends StatelessWidget {
   const InviteScreen({super.key});
 
-  static String codeFor(String email) {
-    var h = 0;
-    for (final c in email.codeUnits) {
-      h = (h * 31 + c) & 0xffffffff;
-    }
-    return 'NAIJA${h.toRadixString(36).toUpperCase().padLeft(5, '0').substring(0, 5)}';
-  }
-
   @override
   Widget build(BuildContext context) {
     final a = context.watch<AuthStore>().account!;
-    final code = codeFor(a.email);
+    final code = a.referralCode ?? '';
     final link = '$_site/signup?ref=$code';
     final msg = 'Join me on MyFlix: Nollywood, movies and series from ₦1,500. Use my code $code and we both get a free month: $link';
     return Scaffold(
@@ -188,7 +181,7 @@ class TvSignInScreen extends StatefulWidget {
 class _TvSignInScreenState extends State<TvSignInScreen> {
   final _code = TextEditingController();
   String? _err;
-  bool _done = false;
+  bool _done = false, _loading = false;
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -214,13 +207,16 @@ class _TvSignInScreenState extends State<TvSignInScreen> {
             decoration: InputDecoration(hintText: '00000000', counterText: '', errorText: _err),
           ),
           const SizedBox(height: 16),
-          PrimaryButton('Sign in TV', onPressed: () {
-            final err = TvLink.approve(_code.text, context.read<AuthStore>().account!.email);
-            if (err != null) return setState(() => _err = err);
+          PrimaryButton('Sign in TV', loading: _loading, onPressed: () async {
+            setState(() => _loading = true);
+            final err = await TvLink.approve(_code.text);
+            if (!mounted) return;
             setState(() {
-              _err = null;
-              _done = true;
+              _loading = false;
+              _err = err;
+              _done = err == null;
             });
+            if (err == null && context.mounted) context.read<AuthStore>().refresh();
           }),
         ],
       ]),
@@ -237,19 +233,30 @@ Future<void> openLink(BuildContext context, String url) async {
 class ContactCard extends StatelessWidget {
   const ContactCard({super.key});
   @override
-  Widget build(BuildContext context) => Container(
+  Widget build(BuildContext context) {
+    // Contact details come from admin Settings, so they're always current
+    final st = Catalog.settings;
+    final wa = '${st['supportWhatsapp'] ?? ''}'.replaceAll(RegExp(r'\D'), '');
+    final phone = '${st['supportPhone'] ?? ''}'.trim();
+    final email = '${st['supportEmail'] ?? ''}'.trim();
+    return Container(
         margin: const EdgeInsets.all(16),
         decoration: BoxDecoration(color: AppColors.ink2, borderRadius: BorderRadius.circular(12)),
         child: Column(children: [
-          ListTile(leading: const Icon(Icons.chat, color: Color(0xFF25D366)), title: const Text('Chat on WhatsApp'), onTap: () => openLink(context, 'https://wa.me/2348000000000')),
-          const Divider(color: AppColors.line, height: 1),
-          ListTile(leading: const Icon(Icons.call_outlined), title: const Text('Call 0800 000 0000'), onTap: () => openLink(context, 'tel:08000000000')),
-          const Divider(color: AppColors.line, height: 1),
-          ListTile(leading: const Icon(Icons.mail_outline), title: const Text('Email help@myflix.ng'), onTap: () => openLink(context, 'mailto:help@myflix.ng')),
-          const Divider(color: AppColors.line, height: 1),
+          if (wa.isNotEmpty) ...[
+            ListTile(leading: const Icon(Icons.chat, color: Color(0xFF25D366)), title: const Text('Chat on WhatsApp'), onTap: () => openLink(context, 'https://wa.me/$wa')),
+            const Divider(color: AppColors.line, height: 1),
+          ],
+          if (phone.isNotEmpty) ...[
+            ListTile(leading: const Icon(Icons.call_outlined), title: Text('Call $phone'), onTap: () => openLink(context, 'tel:${phone.replaceAll(' ', '')}')),
+            const Divider(color: AppColors.line, height: 1),
+          ],
+          if (email.isNotEmpty) ...[
+            ListTile(leading: const Icon(Icons.mail_outline), title: Text('Email $email'), onTap: () => openLink(context, 'mailto:$email')),
+            const Divider(color: AppColors.line, height: 1),
+          ],
           ListTile(leading: const Icon(Icons.support_agent), title: const Text('Send a message to support'), subtitle: const Text('Track replies in the Help Centre', style: TextStyle(color: AppColors.muted)), onTap: () => openLink(context, '$_site/help/')),
         ]),
       );
+  }
 }
-
-const giftRedeemUrl = '$_site/account/gift/';

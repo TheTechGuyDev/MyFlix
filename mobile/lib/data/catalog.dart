@@ -1,21 +1,46 @@
-import 'dart:convert';
-import 'package:flutter/services.dart';
+import 'backend.dart';
 import 'models.dart';
 
-/// Mock catalogue (same data as the web app) until the admin dashboard + backend supply titles.
-class Catalog {
-  static late List<MediaTitle> titles;
-  static late List<Plan> plans;
-  static late List<String> streams;
+export 'models.dart' show Episode;
 
-  /// Progressive MP4 served from the MyFlix site: used for downloads and where HLS isn't supported.
-  static const demoMp4 = 'https://thetechguydev.github.io/MyFlix/media/demo.mp4';
+/// Titles, plans and platform settings, loaded from Supabase at start-up and refreshed on resume.
+class Catalog {
+  static List<MediaTitle> titles = [];
+  static List<Plan> plans = [];
+  static Map<String, dynamic> settings = {};
+  static Map<String, dynamic>? curation;
+  static bool loaded = false;
+  static String? error;
 
   static Future<void> load() async {
-    final raw = jsonDecode(await rootBundle.loadString('assets/data/catalog.json')) as Map<String, dynamic>;
-    titles = (raw['titles'] as List).map((e) => MediaTitle.fromJson(Map<String, dynamic>.from(e))).toList();
-    plans = (raw['plans'] as List).map((e) => Plan.fromJson(Map<String, dynamic>.from(e))).toList();
-    streams = List<String>.from(raw['streams']);
+    if (!backendConfigured) {
+      error = 'not-configured';
+      return;
+    }
+    try {
+      final r = await Future.wait([
+        sb.from('titles').select(),
+        sb.from('episodes').select().order('season').order('number'),
+        sb.from('plans').select().eq('active', true).order('sort'),
+        sb.from('site_settings').select('data').eq('id', 1).maybeSingle(),
+        sb.from('curation').select('data').eq('id', 1).maybeSingle(),
+      ]);
+      final rows = List<Map<String, dynamic>>.from(r[0] as List);
+      final eps = List<Map<String, dynamic>>.from(r[1] as List);
+      final now = DateTime.now();
+      titles = [
+        for (final t in rows)
+          if ((t['status'] == 'published' || t['status'] == 'scheduled') && (t['expires_at'] == null || DateTime.parse(t['expires_at']).isAfter(now)))
+            MediaTitle.fromDb(t, eps.where((e) => e['title_id'] == t['id']).toList()),
+      ];
+      plans = [for (final p in List<Map<String, dynamic>>.from(r[2] as List)) Plan.fromJson(p)];
+      settings = Map<String, dynamic>.from((r[3] as Map?)?['data'] ?? {});
+      curation = (r[4] as Map?)?['data'] == null ? null : Map<String, dynamic>.from((r[4] as Map)['data']);
+      loaded = true;
+      error = null;
+    } catch (e) {
+      error = friendly(e);
+    }
   }
 
   static MediaTitle? byId(String id) {
@@ -42,11 +67,6 @@ class Catalog {
       .where((t) => (includeComing || t.comingSoon == null) && (!kids || t.kids) && allowed(t, max))
       .toList();
 
-  static List<String> sourcesFor(MediaTitle t) {
-    final i = indexOf(t) % streams.length;
-    return [...streams.sublist(i), ...streams.sublist(0, i), demoMp4];
-  }
-
   static List<ContentRow> rows({required String filter, required bool kids, required String max}) {
     var pool = visible(kids: kids, max: max);
     if (filter == 'series') pool = pool.where((t) => t.isSeries).toList();
@@ -63,9 +83,21 @@ class Catalog {
         ContentRow('Fun & Adventure', g(['Adventure', 'Comedy', 'Sports'])),
       ].where((r) => r.items.isNotEmpty).toList();
     }
+    // Rows and Top 10 chosen in the admin dashboard's Home Curation come first on the home tab
+    final curated = <ContentRow>[];
+    if (filter == 'all' || filter == '') {
+      final top = [for (final id in List<String>.from(curation?['top10'] ?? const [])) ...pool.where((t) => t.id == id)];
+      if (top.length >= 3) curated.add(ContentRow('Top 10 in Nigeria Today', top, ranked: true));
+      for (final r in List.from(curation?['rows'] ?? const [])) {
+        if (r is! Map || r['enabled'] == false) continue;
+        final items = [for (final id in List<String>.from(r['titleIds'] ?? const [])) ...pool.where((t) => t.id == id)];
+        if (items.length >= 2) curated.add(ContentRow('${r['title']}', items));
+      }
+    }
     return [
+      ...curated,
       ContentRow(label.isEmpty ? 'Trending Now' : 'Trending $label', ([...pool]..sort((a, b) => b.year != a.year ? b.year.compareTo(a.year) : b.match.compareTo(a.match))).take(14).toList()),
-      ContentRow('Top 10 ${label.isEmpty ? 'in Nigeria' : '$label in Nigeria'} Today', byMatch.take(10).toList(), ranked: true),
+      if (curated.every((r) => !r.ranked)) ContentRow('Top 10 ${label.isEmpty ? 'in Nigeria' : '$label in Nigeria'} Today', ([...pool]..sort((a, b) => b.views != a.views ? b.views.compareTo(a.views) : b.match.compareTo(a.match))).take(10).toList(), ranked: true),
       ContentRow('Nollywood Hits', g(['Nollywood'])),
       ContentRow('Only on MyFlix', pool.where((t) => t.original).toList(), tall: true),
       ContentRow('New Releases', pool.where((t) => t.isNew).toList()),
@@ -78,15 +110,18 @@ class Catalog {
     ].where((r) => r.items.length >= 2).toList();
   }
 
-  static MediaTitle featured({required String filter, required bool kids, required String max}) {
+  /// Hero title: the one picked in Home Curation, else the best match that can be played.
+  static MediaTitle? featured({required String filter, required bool kids, required String max}) {
     final pool = visible(kids: kids, max: max);
-    final pick = kids ? 'compound-kids' : filter == 'movies' ? 'third-mainland' : filter == 'series' ? 'queen-of-balogun' : 'eko-nights';
+    if (pool.isEmpty) return null;
+    final key = kids ? 'heroKids' : filter == 'movies' ? 'heroMovies' : filter == 'series' ? 'heroSeries' : 'heroHome';
+    final pick = curation?[key];
     for (final t in pool) {
-      if (t.id == pick) return t;
+      if (t.id == pick && (filter == 'movies' ? !t.isSeries : filter == 'series' ? t.isSeries : true)) return t;
     }
     final typed = pool.where((t) => filter == 'movies' ? !t.isSeries : filter == 'series' ? t.isSeries : true).toList()
-      ..sort((a, b) => b.match.compareTo(a.match));
-    return typed.isNotEmpty ? typed.first : (pool.isNotEmpty ? pool.first : titles.first);
+      ..sort((a, b) => (b.hasVideo ? 1 : 0) - (a.hasVideo ? 1 : 0) != 0 ? (b.hasVideo ? 1 : 0) - (a.hasVideo ? 1 : 0) : b.match.compareTo(a.match));
+    return typed.isNotEmpty ? typed.first : pool.first;
   }
 
   static List<MediaTitle> search(String q, {required bool kids, required String max}) {
@@ -103,57 +138,14 @@ class Catalog {
   static List<MediaTitle> comingSoon({required bool kids, required String max}) =>
       titles.where((t) => t.comingSoon != null && (!kids || t.kids) && allowed(t, max)).toList();
 
-  static List<Episode> episodes(MediaTitle t, int season) {
-    final count = 6 + ((t.title.length + season) % 4);
-    return List.generate(count, (i) {
-      return Episode(
-        season: season,
-        number: i + 1,
-        title: i == 0 ? 'Pilot' : 'Episode ${i + 1}',
-        runtime: '${42 + ((i * 7 + season) % 15)}m',
-        synopsis: i == 0 ? t.synopsis : 'The stakes rise for everyone in ${t.title} as old loyalties are tested and a new secret comes to light.',
-      );
-    });
-  }
+  static List<Episode> episodes(MediaTitle t, int season) => t.episodes.where((e) => e.season == season).toList();
 }
 
-/// Promo codes (mirrors the admin dashboard defaults until the backend serves live codes).
-class Promo {
-  final String code, kind, label;
-  final int value;
-  final List<String> plans;
-  const Promo(this.code, this.kind, this.value, this.plans, this.label);
-
-  int apply(int price) => kind == 'percent' ? (price * (100 - value) / 100).round() : kind == 'amount' ? (price - value).clamp(0, price) : 0;
-  int get freeMonths => kind == 'free_months' ? value : 0;
-
-  static const all = [
-    Promo('WELCOME50', 'percent', 50, ['basic', 'standard', 'premium'], '50% off your first payment'),
-    Promo('DETTY2026', 'free_months', 1, ['premium'], '1 free month'),
-    Promo('STUDENT', 'amount', 500, ['mobile', 'basic'], '₦500 off your first payment'),
-  ];
-
-  static (Promo?, String?) check(String code, String planId) {
-    final c = code.trim().toUpperCase();
-    if (c.isEmpty) return (null, 'Enter a promo code.');
-    for (final p in all) {
-      if (p.code == c) return p.plans.contains(planId) ? (p, null) : (null, "That code doesn't apply to your plan.");
-    }
-    return (null, "That promo code isn't valid.");
-  }
-}
-
-int annualPrice(Plan p) => (p.price * 12 * 0.85).round();
+int annualPrice(Plan p) => (p.price * 12 * (100 - p.annualDiscount) / 100).round();
 
 class ContentRow {
   final String title;
   final List<MediaTitle> items;
   final bool ranked, tall, progress;
   ContentRow(this.title, this.items, {this.ranked = false, this.tall = false, this.progress = false});
-}
-
-class Episode {
-  final int season, number;
-  final String title, runtime, synopsis;
-  Episode({required this.season, required this.number, required this.title, required this.runtime, required this.synopsis});
 }
