@@ -1,5 +1,8 @@
 import 'dart:async';
-import 'package:cast/cast.dart';
+import 'package:bonsoir/bonsoir.dart';
+import 'package:cast/device.dart';
+import 'package:cast/session.dart';
+import 'package:cast/session_manager.dart';
 import 'package:flutter/foundation.dart';
 
 /// Casting to Chromecast and Google TV devices on the same Wi-Fi (Google's default media receiver).
@@ -32,13 +35,36 @@ class CastStore extends ChangeNotifier {
     error = null;
     notifyListeners();
     try {
-      found = await CastDiscoveryService().search(timeout: const Duration(seconds: 4));
+      found = await _search(const Duration(seconds: 4));
     } catch (_) {
       found = [];
       error = "Couldn't search your Wi-Fi for TVs.";
     }
     scanning = false;
     notifyListeners();
+  }
+
+  /// Finds Chromecast / Google TV devices on the Wi-Fi (mDNS "_googlecast._tcp").
+  Future<List<CastDevice>> _search(Duration timeout) async {
+    final out = <String, CastDevice>{};
+    final discovery = BonsoirDiscovery(type: '_googlecast._tcp');
+    await discovery.initialize();
+    final sub = discovery.eventStream?.listen((e) {
+      if (e is BonsoirDiscoveryServiceFoundEvent) {
+        e.service.resolve(discovery.serviceResolver);
+      } else if (e is BonsoirDiscoveryServiceResolvedEvent) {
+        final s = e.service;
+        final host = s.hostAddresses.isNotEmpty ? s.hostAddresses.first : s.hostname;
+        if (host == null) return;
+        final name = s.attributes['fn'] ?? s.attributes['md'] ?? s.name;
+        out[s.name] = CastDevice(serviceName: s.name, name: name, host: host, port: s.port, extras: s.attributes);
+      }
+    });
+    await discovery.start();
+    await Future.delayed(timeout);
+    await discovery.stop();
+    await sub?.cancel();
+    return out.values.toList();
   }
 
   /// Connects and launches the media receiver on the TV.

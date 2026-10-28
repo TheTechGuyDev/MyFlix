@@ -30,12 +30,16 @@ jobs:
           (cd web && NEXT_PUBLIC_BASE_PATH=/MyFlix npm run build)
           (cd admin && NEXT_PUBLIC_BASE_PATH=/MyFlix/admin NEXT_PUBLIC_SITE_URL=/MyFlix/ npm run build)
           cp -r admin/out web/out/admin
-      - name: Browser smoke test
+      - name: Install browser
         run: |
           npm i --no-save playwright@1.56.1
           npx playwright install --with-deps chromium
-          set -o pipefail
-          node scripts/smoke.mjs web/out | tee smoke.log || { grep FAIL smoke.log | while IFS= read -r l; do echo "::error::$l"; done; exit 1; }
+      - name: Browser smoke test
+        run: |
+          node scripts/smoke.mjs web/out > smoke.log 2>&1 && cat smoke.log && exit 0
+          cat smoke.log
+          grep -vE "^PASS" smoke.log | tail -15 | while IFS= read -r l; do echo "::error::$l"; done
+          exit 1
 
   app:
     runs-on: ubuntu-latest
