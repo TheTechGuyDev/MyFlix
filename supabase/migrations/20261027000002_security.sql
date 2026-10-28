@@ -20,6 +20,7 @@ begin
   return new;
 end $$;
 
+drop trigger if exists on_auth_user_created on auth.users;
 create trigger on_auth_user_created after insert on auth.users
   for each row execute function public.handle_new_user();
 
@@ -34,6 +35,7 @@ begin
   return new;
 end $$;
 
+drop trigger if exists on_auth_user_updated on auth.users;
 create trigger on_auth_user_updated after update of email, phone, phone_confirmed_at on auth.users
   for each row execute function public.handle_user_updated();
 
@@ -65,6 +67,7 @@ begin
   return new;
 end $$;
 
+drop trigger if exists accounts_protect on public.accounts;
 create trigger accounts_protect before update on public.accounts
   for each row execute function public.protect_account();
 
@@ -80,6 +83,7 @@ begin
   return new;
 end $$;
 
+drop trigger if exists viewer_profiles_limit on public.viewer_profiles;
 create trigger viewer_profiles_limit before insert on public.viewer_profiles
   for each row execute function public.limit_profiles();
 

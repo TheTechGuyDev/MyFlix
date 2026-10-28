@@ -253,6 +253,7 @@ begin
   update titles set views = views + 1 where id = new.title_id;
   return new;
 end $$;
+drop trigger if exists activity_count_view on public.activity;
 create trigger activity_count_view after insert on public.activity for each row execute function public.count_view();
 
 /* ============================================================

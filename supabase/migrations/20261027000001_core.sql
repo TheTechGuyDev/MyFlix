@@ -463,7 +463,11 @@ begin
   return new;
 end $$;
 
+drop trigger if exists accounts_touch on public.accounts;
 create trigger accounts_touch before update on public.accounts for each row execute function public.touch_updated_at();
+drop trigger if exists titles_touch on public.titles;
 create trigger titles_touch before update on public.titles for each row execute function public.touch_updated_at();
+drop trigger if exists plans_touch on public.plans;
 create trigger plans_touch before update on public.plans for each row execute function public.touch_updated_at();
+drop trigger if exists tickets_touch on public.tickets;
 create trigger tickets_touch before update on public.tickets for each row execute function public.touch_updated_at();
